@@ -12,7 +12,7 @@ Building on Stellar means wiring together RPC calls, Soroban contract reads, Hor
 
 | Module | Description |
 |--------|-------------|
-| [`contractCache`](src/contractCache.ts) | Two-tier LRU + Redis cache for Soroban contract state reads |
+| [`contractCache`](src/contractCache.ts) | Ledger-sequence-aware two-tier LRU+Redis cache for Soroban contract state — expiry driven by `liveUntilLedgerSeq`, with distinct handling for archived persistent entries |
 | [`rpcRateLimiter`](src/rpcRateLimiter.ts) | Token-bucket rate limiter for Stellar RPC / Horizon API calls |
 | [`transactionBatcher`](src/transactionBatcher.ts) | Concurrent Soroban transaction submission with exponential backoff |
 | [`horizonEventHandler`](src/horizonEventHandler.ts) | Secure, idempotent handler for Horizon streaming events |
@@ -36,22 +36,58 @@ npm install @stellar/stellar-sdk ioredis
 
 ### Contract State Cache
 
-Avoid hammering your RPC node with repeated `getContractData` calls on the same key:
+Caches Soroban `getLedgerEntries` results using the real on-chain TTL model.
+
+Every Soroban CONTRACT_DATA entry has a `liveUntilLedgerSeq` field returned by the RPC — the last ledger at which the entry is live. This cache stores that value alongside each entry and checks it against the current network ledger on every read, so expiry is driven by ledger sequence rather than a wall-clock guess.
+
+**Persistent vs temporary durability:**
+- **Persistent** entries are archived (not deleted) when their TTL expires. Restoring them requires a `RestoreFootprintOperation`. The cache surfaces this as `{ entryArchived: true }` rather than a generic miss, so callers know a restore is needed before refetching.
+- **Temporary** entries are permanently deleted on-chain when their TTL expires. The cache returns a plain `undefined` miss.
 
 ```typescript
-import { ContractCache } from 'soroban-ts-sdk';
-import { Contract, SorobanRpc } from '@stellar/stellar-sdk';
+import { ContractCache, LedgerSequenceTracker } from 'soroban-ts-sdk';
+import { SorobanRpc, xdr, Address } from '@stellar/stellar-sdk';
 
 const server = new SorobanRpc.Server('https://soroban-testnet.stellar.org');
-const cache = new ContractCache({ maxSize: 500, defaultTtlLedgers: 5 });
 
-// Cache miss: fetches from RPC. Cache hit: returns instantly.
-const balance = await cache.getOrFetch(
-  contractId,
-  'balance',
-  [new Address(userAddress)],
-  (key) => server.getContractData(contractId, key, SorobanRpc.Durability.Persistent)
+// Tracks current ledger sequence, re-fetching at most once every 4 s
+const tracker = new LedgerSequenceTracker(
+  () => server.getLatestLedger().then(r => r.sequence)
 );
+
+const cache = new ContractCache({ maxSize: 500 }, null, tracker);
+
+// Build the ledger key for your contract entry
+const ledgerKey = xdr.LedgerKey.contractData(
+  new xdr.LedgerKeyContractData({
+    contract: new Address(contractId).toScAddress(),
+    key: xdr.ScVal.scvSymbol('balance'),
+    durability: xdr.ContractDataDurability.persistent(),
+  })
+);
+
+const result = await cache.getOrFetch(
+  { contractId, storageKey: ledgerKey.toXDR('base64') },
+  async () => {
+    // Your fetch function returns the RPC fields directly
+    const resp = await server.getLedgerEntries(ledgerKey);
+    const entry = resp.entries[0];
+    return {
+      value:              decodeBalanceScVal(entry.xdr),
+      liveUntilLedgerSeq: entry.liveUntilLedgerSeq,  // from RPC response
+      durability:         'persistent',
+      fetchedAtLedger:    resp.latestLedger,           // from RPC response
+    };
+  }
+);
+
+if (result.entryArchived) {
+  // Entry has expired on-chain. Submit RestoreFootprintOperation, then retry.
+  console.log('Entry archived at ledger', result.liveUntilLedgerSeq);
+  await submitRestoreFootprint(contractId, ledgerKey);
+} else {
+  console.log('Balance:', result.value);
+}
 ```
 
 ### RPC Rate Limiter
@@ -140,7 +176,7 @@ console.log('Valid:  ', result.integrityVerified);
 ```
 soroban-ts-sdk/
 ├── src/
-│   ├── contractCache.ts        # Soroban contract state LRU+Redis cache
+│   ├── contractCache.ts        # Ledger-sequence-aware Soroban contract state cache
 │   ├── rpcRateLimiter.ts       # Token-bucket rate limiter for RPC/Horizon
 │   ├── transactionBatcher.ts   # Concurrent transaction submission + retry
 │   ├── horizonEventHandler.ts  # Horizon streaming event handler
