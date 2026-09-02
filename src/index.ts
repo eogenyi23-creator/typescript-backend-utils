@@ -1,0 +1,66 @@
+/**
+ * soroban-ts-sdk
+ *
+ * TypeScript utility SDK for Stellar and Soroban developers.
+ *
+ * @module soroban-ts-sdk
+ */
+
+// Contract state cache (LRU + Redis)
+export {
+  ContractCache,
+  LRUCache,
+  encodeContractKey,
+  type ContractCacheConfig,
+  type ContractStateKey,
+  type CacheEntry,
+} from "./contractCache.js";
+
+// Stellar RPC / Horizon rate limiter
+export {
+  RpcRateLimiter,
+  createRpcRateLimiter,
+  type RpcRateLimiterConfig,
+  type RateLimitResult,
+  type RpcRequest,
+  type RpcResponse,
+  type NextFunction,
+} from "./rpcRateLimiter.js";
+
+// Soroban transaction batcher
+export {
+  TransactionBatcher,
+  type TransactionBatcherConfig,
+  type TransactionRecord,
+  type TransactionStatus,
+  type TransactionTask,
+  type BatcherStatus,
+} from "./transactionBatcher.js";
+
+// Horizon event handler
+export {
+  HorizonEventHandler,
+  HorizonIdempotencyStore,
+  HorizonEventQueue,
+  createHorizonEventHandler,
+  computeHorizonSignature,
+  verifyHorizonSignature,
+  validateHorizonPayload,
+  type HorizonEventPayload,
+  type HorizonEventHandlerConfig,
+  type HorizonEventRequest,
+  type HorizonEventResponse,
+  type HorizonEventResult,
+  type StellarEventType,
+} from "./horizonEventHandler.js";
+
+// Soroban WASM upload pipeline
+export {
+  WasmPipeline,
+  processWasm,
+  validateWasmPath,
+  verifyWasmChunkIntegrity,
+  type WasmPipelineConfig,
+  type WasmManifest,
+  type WasmChunkRecord,
+} from "./wasmPipeline.js";
