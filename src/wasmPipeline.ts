@@ -157,7 +157,8 @@ export async function processWasm(
   const chunks: WasmChunkRecord[] = [];
   let byteOffset = 0;
   let totalCompressedBytes = 0;
-  let firstChunkBuffer: Buffer | null = null;
+  // Store first chunk bytes for WASM magic validation after streaming completes
+  const firstChunkBytes: Buffer[] = [];
 
   await new Promise<void>((resolveStream, rejectStream) => {
     const stream = createReadStream(safePath, { highWaterMark: chunkSize });
@@ -169,7 +170,7 @@ export async function processWasm(
       const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
 
       // Capture first chunk for magic byte validation
-      if (firstChunkBuffer === null) firstChunkBuffer = chunk;
+      if (firstChunkBytes.length === 0) firstChunkBytes.push(chunk);
 
       hash.update(chunk);
 
@@ -201,12 +202,11 @@ export async function processWasm(
 
   // 3. Validate WASM magic bytes
   let wasmMagicValid = false;
-  if (validateMagic && firstChunkBuffer !== null) {
-    wasmMagicValid =
-      firstChunkBuffer.length >= 4 &&
-      firstChunkBuffer.subarray(0, 4).equals(WASM_MAGIC);
-  } else if (!validateMagic) {
-    wasmMagicValid = true; // skipped
+  if (!validateMagic) {
+    wasmMagicValid = true; // validation skipped
+  } else if (firstChunkBytes.length > 0) {
+    const first = firstChunkBytes[0];
+    wasmMagicValid = first.length >= 4 && first.subarray(0, 4).equals(WASM_MAGIC);
   }
 
   // 4. Build and write manifest
