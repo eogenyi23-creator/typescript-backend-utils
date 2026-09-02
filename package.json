@@ -1,20 +1,56 @@
 {
-  "name": "typescript-backend-utils",
-  "version": "1.0.0",
-  "description": "Complex backend utility modules for distributed systems",
+  "name": "soroban-ts-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript utility SDK for Stellar and Soroban developers — contract state cache, RPC rate limiter, transaction batcher, Horizon event handler, and WASM upload pipeline.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "jest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
-  "dependencies": {
-    "ioredis": "^5.4.1"
+  "keywords": [
+    "stellar",
+    "soroban",
+    "typescript",
+    "sdk",
+    "stellar-sdk",
+    "soroban-sdk",
+    "blockchain",
+    "web3",
+    "smart-contracts",
+    "stellar-network",
+    "rpc",
+    "horizon"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eogenyi23-creator/typescript-backend-utils"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@stellar/stellar-sdk": ">=12.0.0",
+    "ioredis": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@stellar/stellar-sdk": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@types/jest": "^29.5.12",
-    "@types/node": "^20.11.24",
-    "jest": "^29.7.0",
-    "ts-jest": "^29.1.2",
-    "typescript": "^5.3.3"
+    "@stellar/stellar-sdk": "13.1.0",
+    "@types/jest": "29.5.12",
+    "@types/node": "20.11.24",
+    "ioredis": "5.4.1",
+    "jest": "29.7.0",
+    "ts-jest": "29.1.2",
+    "typescript": "5.3.3"
   }
 }
