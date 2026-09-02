@@ -17,6 +17,8 @@
  * - Streams WASM file in configurable chunks (default 64 KB)
  * - Computes SHA-256 on the fly — matches what Stellar network stores
  * - Validates WASM magic bytes (\0asm) to catch non-WASM files early
+ * - `validate()` method throws immediately on invalid magic bytes, preventing
+ *   accidental uploads of non-WASM files to the network
  * - Verifies chunk byte ranges cover the entire file
  * - Writes a JSON manifest with hash, size, chunk info, and completedAt
  * - Sandbox path isolation to prevent directory traversal
@@ -234,11 +236,72 @@ export async function processWasm(
  *
  * @example
  * const pipeline = new WasmPipeline({ sandboxDir: './contracts/target/wasm32v1-none/release' });
+ *
+ * // Validate before processing — throws if not a valid WASM binary:
+ * await pipeline.validate('my_contract.wasm');
+ *
+ * // Process and get the manifest + wasm-hash:
  * const manifest = await pipeline.process('my_contract.wasm');
  * console.log('wasm-hash:', manifest.sha256);
  */
 export class WasmPipeline {
   constructor(private readonly config: WasmPipelineConfig) {}
+
+  /**
+   * Validates that the file at `filePath` is a valid Soroban WASM binary by
+   * checking the WebAssembly magic bytes (`\0asm`, `0x00 0x61 0x73 0x6d`).
+   *
+   * Throws an error if:
+   * - The path is outside the sandbox (directory traversal)
+   * - The file does not exist
+   * - The file does not start with the WASM magic bytes
+   *
+   * Use this before calling `process()` to prevent uploading non-WASM files
+   * to the Stellar network and wasting ledger fees on a guaranteed failure.
+   *
+   * @param filePath - Path to the WASM file (relative to sandboxDir)
+   * @throws {Error} If the file is not a valid WASM binary
+   *
+   * @example
+   * await pipeline.validate('my_contract.wasm'); // throws if invalid
+   * const manifest = await pipeline.process('my_contract.wasm');
+   */
+  async validate(filePath: string): Promise<void> {
+    const safePath = validateWasmPath(this.config.sandboxDir, filePath);
+
+    if (!existsSync(safePath)) {
+      throw new Error(`WASM file not found: ${safePath}`);
+    }
+
+    const stat = statSync(safePath);
+    if (!stat.isFile()) {
+      throw new Error(`Not a file: ${safePath}`);
+    }
+
+    if (stat.size < 4) {
+      throw new Error(
+        `Invalid WASM file "${filePath}": file is too small to contain magic bytes (${stat.size} bytes)`
+      );
+    }
+
+    // Read only the first 4 bytes — no need to stream the whole file
+    const header = await new Promise<Buffer>((res, rej) => {
+      const chunks: Buffer[] = [];
+      const stream = createReadStream(safePath, { start: 0, end: 3 });
+      stream.on("data", (chunk: Buffer | string) =>
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      );
+      stream.on("end", () => res(Buffer.concat(chunks)));
+      stream.on("error", rej);
+    });
+
+    if (!header.equals(WASM_MAGIC)) {
+      throw new Error(
+        `Invalid WASM file "${filePath}": expected magic bytes \\0asm (0x00 0x61 0x73 0x6d), ` +
+        `got 0x${header.toString("hex").toUpperCase()}`
+      );
+    }
+  }
 
   async process(filePath: string): Promise<WasmManifest> {
     return processWasm(filePath, this.config);
