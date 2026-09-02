@@ -23,7 +23,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "crypto";
-import type Redis from "ioredis";
+import type { Redis } from "ioredis";
 
 // ---------------------------------------------------------------------------
 // Stellar Event Types
