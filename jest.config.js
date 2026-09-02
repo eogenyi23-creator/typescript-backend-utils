@@ -1,5 +1,5 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
-module.exports = {
+export default {
   preset: 'ts-jest',
   testEnvironment: 'node',
   testMatch: ['**/tests/**/*.test.ts'],
@@ -8,6 +8,7 @@ module.exports = {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {
-    '^.+\\.tsx?$': ['ts-jest', { diagnostics: { ignoreCodes: [151002] } }],
+    '^.+\\.tsx?$': ['ts-jest', { diagnostics: { ignoreCodes: [151002] }, useESM: true }],
   },
+  extensionsToTreatAsEsm: ['.ts'],
 };
