@@ -44,7 +44,7 @@
  * These come directly from the `getLedgerEntries` or `getContractData` response.
  */
 
-import type Redis from "ioredis";
+import type { Redis } from "ioredis";
 
 // ---------------------------------------------------------------------------
 // Public types
