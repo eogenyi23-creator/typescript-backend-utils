@@ -6,14 +6,18 @@
  * @module soroban-ts-sdk
  */
 
-// Contract state cache (LRU + Redis)
+// Contract state cache (ledger-sequence-aware LRU + Redis)
 export {
   ContractCache,
   LRUCache,
+  LedgerSequenceTracker,
   encodeContractKey,
   type ContractCacheConfig,
   type ContractStateKey,
-  type CacheEntry,
+  type ContractDataDurability,
+  type SorobanEntryResult,
+  type ArchivedEntryResult,
+  type CacheResult,
 } from "./contractCache.js";
 
 // Stellar RPC / Horizon rate limiter
