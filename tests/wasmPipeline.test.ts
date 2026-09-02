@@ -2,7 +2,7 @@
  * Tests for the Soroban WASM upload pipeline.
  */
 
-import { writeFile, mkdir, rm } from "fs/promises";
+import { writeFile, mkdir, rm, readdir, readFile } from "fs/promises";
 import { join, resolve } from "path";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
@@ -192,7 +192,6 @@ describe("processWasm", () => {
     it("writes a valid JSON manifest file to outputDir", async () => {
       await createFakeWasm("manifest-test.wasm", 256);
       await processWasm("manifest-test.wasm", makeConfig());
-      const { readdir, readFile } = await import("fs/promises");
       const files = await readdir(OUTPUT);
       const manifests = files.filter((f) => f.startsWith("manifest-test.wasm") && f.endsWith(".manifest.json"));
       expect(manifests.length).toBeGreaterThan(0);
