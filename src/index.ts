@@ -25,6 +25,7 @@ export {
   RpcRateLimiter,
   createRpcRateLimiter,
   type RpcRateLimiterConfig,
+  type RpcRateLimiterOptions,
   type RateLimitResult,
   type RpcRequest,
   type RpcResponse,
@@ -39,17 +40,20 @@ export {
   type TransactionStatus,
   type TransactionTask,
   type BatcherStatus,
+  type SubmitResults,
 } from "./transactionBatcher.js";
 
 // Horizon event handler
 export {
   HorizonEventHandler,
   HorizonIdempotencyStore,
+  RedisIdempotencyStore,
   HorizonEventQueue,
   createHorizonEventHandler,
   computeHorizonSignature,
   verifyHorizonSignature,
   validateHorizonPayload,
+  type IdempotencyStore,
   type HorizonEventPayload,
   type HorizonEventHandlerConfig,
   type HorizonEventRequest,
