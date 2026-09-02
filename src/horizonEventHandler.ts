@@ -16,12 +16,14 @@
  * - Constant-time HMAC-SHA256 signature verification
  * - Replay attack prevention (configurable timestamp window)
  * - Raw body capture for accurate signature matching
- * - In-memory idempotency store (swap for Redis/DB in production)
+ * - In-memory idempotency store (swap for RedisIdempotencyStore in production)
+ * - Redis-backed idempotency store for multi-instance / restart-safe deduplication
  * - Immediate 202 Accepted + async queue offload
  * - Typed Stellar event payload (payment, account, contract, ledger)
  */
 
 import { createHmac, timingSafeEqual } from "crypto";
+import type Redis from "ioredis";
 
 // ---------------------------------------------------------------------------
 // Stellar Event Types
@@ -77,14 +79,28 @@ export interface HorizonEventResult {
 }
 
 // ---------------------------------------------------------------------------
-// Idempotency Store
+// Idempotency Store interface
 // ---------------------------------------------------------------------------
 
 /**
- * In-memory idempotency store. In production, replace with a Redis SET NX
- * keyed by event ID with TTL = maxAgeSeconds.
+ * Interface for event idempotency stores. Implement this to plug in your own
+ * backend (e.g. PostgreSQL, DynamoDB).
  */
-export class HorizonIdempotencyStore {
+export interface IdempotencyStore {
+  has(eventId: string): boolean | Promise<boolean>;
+  mark(eventId: string, ts: number): void | Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// In-memory Idempotency Store
+// ---------------------------------------------------------------------------
+
+/**
+ * In-memory idempotency store. Suitable for single-instance deployments or
+ * testing. In production with multiple instances or process restarts, use
+ * `RedisIdempotencyStore` instead.
+ */
+export class HorizonIdempotencyStore implements IdempotencyStore {
   private seen: Map<string, number> = new Map();
 
   has(eventId: string): boolean { return this.seen.has(eventId); }
@@ -99,6 +115,81 @@ export class HorizonIdempotencyStore {
   }
 
   get size(): number { return this.seen.size; }
+}
+
+// ---------------------------------------------------------------------------
+// Redis-backed Idempotency Store
+// ---------------------------------------------------------------------------
+
+/**
+ * Redis-backed idempotency store for production use.
+ *
+ * Uses `SET NX EX` (set-if-not-exists with TTL) for atomic idempotency checks.
+ * Safe to use across multiple server instances and survives process restarts.
+ *
+ * @example
+ * import Redis from "ioredis";
+ * const redis = new Redis(process.env.REDIS_URL);
+ * const idempotency = new RedisIdempotencyStore(redis, { ttlSeconds: 300 });
+ * const handler = HorizonEventHandler.create({ secret: process.env.SECRET! }, idempotency);
+ */
+export class RedisIdempotencyStore implements IdempotencyStore {
+  private readonly redis: Redis;
+  private readonly ttlSeconds: number;
+  private readonly keyPrefix: string;
+
+  constructor(
+    redis: Redis,
+    options: {
+      /** TTL for idempotency keys in seconds (default: 300, matching maxAgeSeconds) */
+      ttlSeconds?: number;
+      /** Redis key prefix (default: "horizon:idempotency:") */
+      keyPrefix?: string;
+    } = {}
+  ) {
+    this.redis = redis;
+    this.ttlSeconds = options.ttlSeconds ?? 300;
+    this.keyPrefix = options.keyPrefix ?? "horizon:idempotency:";
+  }
+
+  private key(eventId: string): string {
+    return `${this.keyPrefix}${eventId}`;
+  }
+
+  /**
+   * Atomically checks and marks an event as seen in a single Redis operation.
+   * Returns true if the event was already seen, false if it was freshly marked.
+   *
+   * Uses SET NX EX to guarantee atomicity — no TOCTOU race between check and set.
+   */
+  async hasAndMark(eventId: string, ts: number): Promise<boolean> {
+    const result = await this.redis.set(
+      this.key(eventId),
+      String(ts),
+      "EX",
+      this.ttlSeconds,
+      "NX"
+    );
+    // SET NX returns null when the key already existed → duplicate
+    return result === null;
+  }
+
+  /**
+   * Checks whether an event ID has been seen.
+   * Note: prefer `hasAndMark()` for atomic check-and-set in a single round trip.
+   */
+  async has(eventId: string): Promise<boolean> {
+    const result = await this.redis.exists(this.key(eventId));
+    return result > 0;
+  }
+
+  /**
+   * Marks an event ID as seen with the given timestamp.
+   * Note: prefer `hasAndMark()` for atomic check-and-set in a single round trip.
+   */
+  async mark(eventId: string, _ts: number): Promise<void> {
+    await this.redis.set(this.key(eventId), "1", "EX", this.ttlSeconds, "NX");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,16 +276,16 @@ export function validateHorizonPayload(
  * 1. Verifies HMAC-SHA256 signature (constant-time)
  * 2. Validates payload schema
  * 3. Rejects events older than maxAgeSeconds (replay attack prevention)
- * 4. Enforces idempotency via event ID tracking
+ * 4. Enforces idempotency via event ID tracking (in-memory or Redis)
  * 5. Enqueues valid events and returns 202 Accepted immediately
  *
  * @param config      - Handler configuration
- * @param idempotency - Idempotency store (injected for testability)
+ * @param idempotency - Idempotency store (injected for testability; use RedisIdempotencyStore in production)
  * @param queue       - Processing queue (injected for testability)
  */
 export function createHorizonEventHandler(
   config: HorizonEventHandlerConfig,
-  idempotency: HorizonIdempotencyStore = new HorizonIdempotencyStore(),
+  idempotency: HorizonIdempotencyStore | RedisIdempotencyStore = new HorizonIdempotencyStore(),
   queue: HorizonEventQueue = new HorizonEventQueue()
 ): (req: HorizonEventRequest, res: HorizonEventResponse) => Promise<HorizonEventResult> {
   const maxAge = config.maxAgeSeconds ?? 300;
@@ -241,11 +332,20 @@ export function createHorizonEventHandler(
     }
 
     // 5. Idempotency check
-    if (idempotency.has(payload.id)) {
-      res.status(202).json({ status: "accepted", duplicate: true, id: payload.id });
-      return { accepted: true, reason: "duplicate", payload };
+    // RedisIdempotencyStore exposes hasAndMark() for atomic check-and-set
+    if (idempotency instanceof RedisIdempotencyStore) {
+      const isDuplicate = await idempotency.hasAndMark(payload.id, payload.timestamp);
+      if (isDuplicate) {
+        res.status(202).json({ status: "accepted", duplicate: true, id: payload.id });
+        return { accepted: true, reason: "duplicate", payload };
+      }
+    } else {
+      if (idempotency.has(payload.id)) {
+        res.status(202).json({ status: "accepted", duplicate: true, id: payload.id });
+        return { accepted: true, reason: "duplicate", payload };
+      }
+      idempotency.mark(payload.id, payload.timestamp);
     }
-    idempotency.mark(payload.id, payload.timestamp);
 
     // 6. Enqueue and respond 202
     queue.enqueue(payload);
@@ -265,7 +365,13 @@ export function createHorizonEventHandler(
  * Convenience class for OO usage.
  *
  * @example
+ * // Single-instance / testing — in-memory idempotency:
  * const handler = HorizonEventHandler.create({ secret: process.env.SECRET! });
+ * app.post('/horizon/events', handler.middleware());
+ *
+ * // Production — Redis-backed idempotency:
+ * const idempotency = new RedisIdempotencyStore(redis, { ttlSeconds: 300 });
+ * const handler = HorizonEventHandler.create({ secret: process.env.SECRET! }, idempotency);
  * app.post('/horizon/events', handler.middleware());
  */
 export class HorizonEventHandler {
@@ -277,7 +383,7 @@ export class HorizonEventHandler {
 
   static create(
     config: HorizonEventHandlerConfig,
-    idempotency?: HorizonIdempotencyStore,
+    idempotency?: HorizonIdempotencyStore | RedisIdempotencyStore,
     queue?: HorizonEventQueue
   ): HorizonEventHandler {
     return new HorizonEventHandler(createHorizonEventHandler(config, idempotency, queue));
