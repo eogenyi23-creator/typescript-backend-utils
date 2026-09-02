@@ -18,6 +18,7 @@
  * - Exponential backoff with full jitter (thundering-herd prevention)
  * - AbortSignal support for cancellation
  * - Per-task status tracking (pending / fulfilled / rejected)
+ * - `submitWithResults()` helper for typed split of fulfilled vs rejected
  * - Memory management: completed records flushed after run()
  */
 
@@ -50,6 +51,17 @@ export interface BatcherStatus<T> {
   pending: TransactionRecord<T>[];
   fulfilled: TransactionRecord<T>[];
   rejected: TransactionRecord<T>[];
+}
+
+/**
+ * The typed return value of `submitWithResults()`.
+ * Splits the flat run() output into guaranteed-fulfilled and guaranteed-rejected buckets.
+ */
+export interface SubmitResults<T> {
+  /** Records that completed successfully */
+  fulfilled: Array<TransactionRecord<T> & { status: "fulfilled"; result: T }>;
+  /** Records that were rejected after all retries */
+  rejected: Array<TransactionRecord<T> & { status: "rejected"; error: Error }>;
 }
 
 /** A unit of work: an async function that submits one transaction */
@@ -89,11 +101,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-let _idCounter = 0;
-function nextId(): string {
-  return `tx-${++_idCounter}-${Date.now()}`;
-}
-
 // ---------------------------------------------------------------------------
 // TransactionBatcher
 // ---------------------------------------------------------------------------
@@ -104,11 +111,19 @@ function nextId(): string {
  *
  * @example
  * const batcher = new TransactionBatcher({ maxConcurrency: 5, batchSize: 10, retryInterval: 1000 });
- * const results = await batcher.run(txEnvelopes.map(xdr => () => server.sendTransaction(xdr)));
+ *
+ * // Run and get all results:
+ * const records = await batcher.run(txEnvelopes.map(xdr => () => server.sendTransaction(xdr)));
+ *
+ * // Or use the typed split helper:
+ * const { fulfilled, rejected } = await batcher.submitWithResults(tasks);
+ * console.log(`${fulfilled.length} succeeded, ${rejected.length} failed`);
  */
 export class TransactionBatcher<T> {
   private readonly config: Required<TransactionBatcherConfig>;
   private liveRecords: Map<string, TransactionRecord<T>> = new Map();
+  /** Instance-level counter to generate unique task IDs without global state */
+  private idCounter = 0;
 
   constructor(config: TransactionBatcherConfig) {
     this.config = {
@@ -117,6 +132,10 @@ export class TransactionBatcher<T> {
       maxJitter: 200,
       ...config,
     };
+  }
+
+  private nextId(): string {
+    return `tx-${++this.idCounter}-${Date.now()}`;
   }
 
   /**
@@ -130,7 +149,7 @@ export class TransactionBatcher<T> {
     if (tasks.length === 0) return [];
 
     const ids: string[] = tasks.map(() => {
-      const id = nextId();
+      const id = this.nextId();
       this.liveRecords.set(id, { id, status: "pending", attempts: 0 });
       return id;
     });
@@ -165,6 +184,39 @@ export class TransactionBatcher<T> {
     }
 
     return results;
+  }
+
+  /**
+   * Convenience wrapper around `run()` that returns a typed split of
+   * fulfilled and rejected records instead of a mixed flat array.
+   *
+   * @param tasks   - Array of async functions, each submitting one transaction
+   * @param signal  - Optional AbortSignal to cancel pending submissions
+   * @returns       - `{ fulfilled, rejected }` with narrow types on each record
+   *
+   * @example
+   * const { fulfilled, rejected } = await batcher.submitWithResults(tasks);
+   * for (const r of fulfilled) console.log('hash:', r.result.hash);
+   * for (const r of rejected)  console.error('error:', r.error.message);
+   */
+  async submitWithResults(
+    tasks: TransactionTask<T>[],
+    signal?: AbortSignal
+  ): Promise<SubmitResults<T>> {
+    const records = await this.run(tasks, signal);
+
+    const fulfilled: SubmitResults<T>["fulfilled"] = [];
+    const rejected: SubmitResults<T>["rejected"] = [];
+
+    for (const record of records) {
+      if (record.status === "fulfilled") {
+        fulfilled.push(record as TransactionRecord<T> & { status: "fulfilled"; result: T });
+      } else if (record.status === "rejected") {
+        rejected.push(record as TransactionRecord<T> & { status: "rejected"; error: Error });
+      }
+    }
+
+    return { fulfilled, rejected };
   }
 
   private async _executeBatch(
