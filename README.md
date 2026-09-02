@@ -13,10 +13,10 @@ Building on Stellar means wiring together RPC calls, Soroban contract reads, Hor
 | Module | Description |
 |--------|-------------|
 | [`contractCache`](src/contractCache.ts) | Ledger-sequence-aware two-tier LRU+Redis cache for Soroban contract state — expiry driven by `liveUntilLedgerSeq`, with distinct handling for archived persistent entries |
-| [`rpcRateLimiter`](src/rpcRateLimiter.ts) | Token-bucket rate limiter for Stellar RPC / Horizon API calls |
-| [`transactionBatcher`](src/transactionBatcher.ts) | Concurrent Soroban transaction submission with exponential backoff |
-| [`horizonEventHandler`](src/horizonEventHandler.ts) | Secure, idempotent handler for Horizon streaming events |
-| [`wasmPipeline`](src/wasmPipeline.ts) | Streaming WASM validation and hash pipeline for Soroban contract uploads |
+| [`rpcRateLimiter`](src/rpcRateLimiter.ts) | Token-bucket rate limiter (Redis-backed) for Stellar RPC / Horizon API calls, with `trustProxy` support |
+| [`transactionBatcher`](src/transactionBatcher.ts) | Concurrent Soroban transaction submission with exponential backoff and `submitWithResults()` helper |
+| [`horizonEventHandler`](src/horizonEventHandler.ts) | Secure, idempotent Horizon event handler with in-memory and Redis-backed deduplication |
+| [`wasmPipeline`](src/wasmPipeline.ts) | Streaming WASM validation (`validate()`), hash, and manifest pipeline for Soroban contract uploads |
 
 ## Installation
 
@@ -57,7 +57,6 @@ const tracker = new LedgerSequenceTracker(
 
 const cache = new ContractCache({ maxSize: 500 }, null, tracker);
 
-// Build the ledger key for your contract entry
 const ledgerKey = xdr.LedgerKey.contractData(
   new xdr.LedgerKeyContractData({
     contract: new Address(contractId).toScAddress(),
@@ -69,14 +68,13 @@ const ledgerKey = xdr.LedgerKey.contractData(
 const result = await cache.getOrFetch(
   { contractId, storageKey: ledgerKey.toXDR('base64') },
   async () => {
-    // Your fetch function returns the RPC fields directly
     const resp = await server.getLedgerEntries(ledgerKey);
     const entry = resp.entries[0];
     return {
-      value:              decodeBalanceScVal(entry.xdr),
-      liveUntilLedgerSeq: entry.liveUntilLedgerSeq,  // from RPC response
+      value:               decodeBalanceScVal(entry.xdr),
+      liveUntilLedgerSeq: entry.liveUntilLedgerSeq,
       durability:         'persistent',
-      fetchedAtLedger:    resp.latestLedger,           // from RPC response
+      fetchedAtLedger:    resp.latestLedger,
     };
   }
 );
@@ -92,18 +90,21 @@ if (result.entryArchived) {
 
 ### RPC Rate Limiter
 
-Respect Stellar RPC and Horizon rate limits without dropping requests:
+Token-bucket rate limiter backed by Redis. The `trustProxy` option lets you safely honour `X-Forwarded-For` headers when sitting behind a trusted reverse proxy.
 
 ```typescript
 import { RpcRateLimiter } from 'soroban-ts-sdk';
 import Redis from 'ioredis';
 
 const redis = new Redis();
-const limiter = RpcRateLimiter.create('soroban-rpc', redis, {
-  maxTokens: 100,    // 100 req/min
-  refillRate: 100 / 60,
-  windowSeconds: 60,
-});
+
+// Direct exposure — use socket IP only (safe default)
+const limiter = RpcRateLimiter.create('soroban-rpc', redis);
+
+// Behind a trusted reverse proxy (nginx, AWS ALB, Cloudflare, etc.)
+const limiterWithProxy = RpcRateLimiter.create(
+  'soroban-rpc', redis, 'public', {}, { trustProxy: true }
+);
 
 // In your Express/Hono middleware:
 app.use('/rpc', limiter.middleware());
@@ -111,7 +112,7 @@ app.use('/rpc', limiter.middleware());
 
 ### Transaction Batcher
 
-Submit multiple Soroban transactions concurrently with automatic retry:
+Submit multiple Soroban transactions concurrently with automatic retry on transient errors (`txInsufficientFee`, `txBadSeq`).
 
 ```typescript
 import { TransactionBatcher } from 'soroban-ts-sdk';
@@ -123,32 +124,39 @@ const batcher = new TransactionBatcher({
   maxRetries: 3,
 });
 
-const txEnvelopes = [...]; // array of XDR strings or Transaction objects
-const results = await batcher.submit(txEnvelopes, (xdr) =>
-  server.sendTransaction(xdr)
-);
+const tasks = txEnvelopes.map(xdr => () => server.sendTransaction(xdr));
 
-results.forEach((r) => {
-  if (r.status === 'fulfilled') console.log('hash:', r.result.hash);
-  else console.error('failed:', r.error.message);
-});
+// Option A — flat array of records
+const records = await batcher.run(tasks);
+
+// Option B — typed split into fulfilled / rejected buckets
+const { fulfilled, rejected } = await batcher.submitWithResults(tasks);
+for (const r of fulfilled) console.log('hash:', r.result.hash);
+for (const r of rejected)  console.error('error:', r.error.message);
 ```
 
 ### Horizon Event Handler
 
-Process Stellar Horizon payment, ledger, and contract events with idempotency:
+Process Stellar Horizon payment, ledger, and contract events with HMAC signature verification and idempotency.
 
 ```typescript
-import { HorizonEventHandler } from 'soroban-ts-sdk';
+import { HorizonEventHandler, RedisIdempotencyStore } from 'soroban-ts-sdk';
+import Redis from 'ioredis';
 
+// Single-instance / dev — in-memory deduplication
 const handler = HorizonEventHandler.create({
   secret: process.env.HORIZON_WEBHOOK_SECRET!,
   onEvent: async (event) => {
-    if (event.type === 'payment') {
-      await processPayment(event);
-    }
+    if (event.type === 'payment') await processPayment(event);
   },
 });
+
+// Production — Redis-backed deduplication (survives restarts, works across instances)
+const idempotency = new RedisIdempotencyStore(new Redis(), { ttlSeconds: 300 });
+const handlerProd = HorizonEventHandler.create(
+  { secret: process.env.HORIZON_WEBHOOK_SECRET! },
+  idempotency
+);
 
 // Express route
 app.post('/horizon/events', handler.middleware());
@@ -156,19 +164,22 @@ app.post('/horizon/events', handler.middleware());
 
 ### WASM Upload Pipeline
 
-Hash, validate, and prepare a Soroban contract WASM before deploying:
+Validate, hash, and prepare a Soroban contract WASM before uploading to the Stellar network.
 
 ```typescript
 import { WasmPipeline } from 'soroban-ts-sdk';
 
-const pipeline = new WasmPipeline({ sandboxDir: './contracts/target' });
+const pipeline = new WasmPipeline({ sandboxDir: './contracts/target/wasm32v1-none/release' });
 
-const result = await pipeline.process('my_contract.wasm');
-console.log('SHA-256:', result.sha256);
-console.log('Size:   ', result.totalBytes, 'bytes');
-console.log('Valid:  ', result.integrityVerified);
+// Validate first — throws immediately if the file is not a valid WASM binary,
+// preventing a wasted on-chain upload transaction.
+await pipeline.validate('my_contract.wasm');
 
-// Use result.sha256 with `stellar contract install --wasm-hash`
+// Process — streams the file, computes SHA-256, writes a manifest JSON.
+const manifest = await pipeline.process('my_contract.wasm');
+console.log('wasm-hash:', manifest.sha256);   // use with `stellar contract install --wasm-hash`
+console.log('size:     ', manifest.totalBytes, 'bytes');
+console.log('valid:    ', manifest.wasmMagicValid && manifest.integrityVerified);
 ```
 
 ## Repository Structure
@@ -189,7 +200,7 @@ soroban-ts-sdk/
 │   ├── horizonEventHandler.test.ts
 │   └── wasmPipeline.test.ts
 ├── .github/workflows/
-│   └── ci.yml                  # Build + test on every push/PR
+│   └── ci.yml                  # Build + test on every push/PR (Node 20 & 22)
 ├── package.json
 ├── tsconfig.json
 ├── CONTRIBUTING.md
@@ -224,7 +235,7 @@ npm run build
 npm test
 ```
 
-### Lint
+### Lint / Type-check
 
 ```bash
 npm run lint
@@ -232,9 +243,9 @@ npm run lint
 
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
-Issues tagged [`good first issue`](../../issues?q=label%3A%22good+first+issue%22) are beginner-friendly starting points.
+Open issues labelled [`good first issue`](../../issues?q=label%3A%22good+first+issue%22) are great starting points for first-time contributors. This repository participates in the [Stellar Wave Program](https://www.drips.network/wave) — contributors can earn rewards for merged PRs on open issues.
 
 ## Stellar Resources
 
