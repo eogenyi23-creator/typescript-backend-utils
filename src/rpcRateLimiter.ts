@@ -18,6 +18,7 @@
  * - Custom tier support for any endpoint
  * - Fails open on Redis outages to prevent crashes
  * - Framework-agnostic middleware interface (Express / Hono / Fastify)
+ * - `trustProxy` option to safely honour X-Forwarded-For from a trusted upstream
  */
 
 import Redis from "ioredis";
@@ -120,30 +121,58 @@ export interface RpcResponse {
 export type NextFunction = () => void | Promise<void>;
 
 /**
+ * Options for createRpcRateLimiter / RpcRateLimiter.create
+ */
+export interface RpcRateLimiterOptions {
+  /**
+   * When true, the rate limiter will trust the `X-Forwarded-For` header to
+   * determine the real client IP. Only enable this if your service sits behind
+   * a trusted reverse proxy (nginx, AWS ALB, Cloudflare, etc.) that sets this
+   * header — otherwise clients can spoof it to bypass per-IP limits.
+   *
+   * Default: false (uses req.ip / req.socket.remoteAddress only)
+   */
+  trustProxy?: boolean;
+}
+
+/**
+ * Resolves the real client identifier from the request.
+ *
+ * If `trustProxy` is true the leftmost (client-supplied) IP in
+ * `X-Forwarded-For` is used, which is the de-facto standard set by trusted
+ * reverse proxies. When false, the direct socket address is used.
+ */
+function resolveIdentifier(req: RpcRequest, trustProxy: boolean): string {
+  if (trustProxy) {
+    const forwarded = req.headers["x-forwarded-for"];
+    const first = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    if (first) return first.split(",")[0].trim();
+  }
+  return req.ip ?? req.socket?.remoteAddress ?? "unknown";
+}
+
+/**
  * Creates an RPC rate limiter for the given tier and endpoint name.
  *
  * @param endpoint  - Logical name for the endpoint (e.g. 'soroban-rpc', 'horizon')
  * @param tier      - 'public' or 'authenticated' (or supply a custom config)
  * @param redis     - ioredis client instance
  * @param config    - Optional custom rate limit config (overrides tier defaults)
+ * @param options   - Additional options (e.g. trustProxy)
  */
 export function createRpcRateLimiter(
   endpoint: string,
   tier: "public" | "authenticated",
   redis: Redis,
-  config?: Partial<RpcRateLimiterConfig>
+  config?: Partial<RpcRateLimiterConfig>,
+  options: RpcRateLimiterOptions = {}
 ): (req: RpcRequest, res: RpcResponse, next: NextFunction) => Promise<void> {
   const baseConfig = TIER_CONFIGS[tier];
   const resolvedConfig: RpcRateLimiterConfig = { ...baseConfig, ...config };
+  const trustProxy = options.trustProxy ?? false;
 
   return async (req: RpcRequest, res: RpcResponse, next: NextFunction): Promise<void> => {
-    const forwarded = req.headers["x-forwarded-for"];
-    const identifier =
-      (Array.isArray(forwarded) ? forwarded[0] : forwarded) ??
-      req.ip ??
-      req.socket?.remoteAddress ??
-      "unknown";
-
+    const identifier = resolveIdentifier(req, trustProxy);
     const bucketKey = `rl:${endpoint}:${tier}:${identifier}`;
 
     try {
@@ -189,6 +218,11 @@ export function createRpcRateLimiter(
  * Convenience class wrapping createRpcRateLimiter for OO usage.
  *
  * @example
+ * // Behind a trusted reverse proxy (e.g. nginx / AWS ALB):
+ * const limiter = RpcRateLimiter.create('soroban-rpc', redis, 'public', {}, { trustProxy: true });
+ * app.use('/rpc', limiter.middleware());
+ *
+ * // Direct exposure (no proxy):
  * const limiter = RpcRateLimiter.create('soroban-rpc', redis);
  * app.use('/rpc', limiter.middleware());
  */
@@ -203,9 +237,10 @@ export class RpcRateLimiter {
     endpoint: string,
     redis: Redis,
     tier: "public" | "authenticated" = "public",
-    config?: Partial<RpcRateLimiterConfig>
+    config?: Partial<RpcRateLimiterConfig>,
+    options?: RpcRateLimiterOptions
   ): RpcRateLimiter {
-    return new RpcRateLimiter(createRpcRateLimiter(endpoint, tier, redis, config));
+    return new RpcRateLimiter(createRpcRateLimiter(endpoint, tier, redis, config, options));
   }
 
   middleware(): (req: RpcRequest, res: RpcResponse, next: NextFunction) => Promise<void> {
