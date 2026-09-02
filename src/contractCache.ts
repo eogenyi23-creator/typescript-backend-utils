@@ -391,6 +391,9 @@ export class ContractCache {
   /**
    * Converts `liveUntilLedgerSeq` into a wall-clock TTL for L1/L2 storage.
    * Uses the known current ledger if available, otherwise uses fetchedAtLedger.
+   *
+   * Returns 0 when the entry is already at or past expiry — callers must not
+   * cache a 0-TTL entry.
    */
   private _toWallClockTtl(
     liveUntilLedgerSeq: number,
@@ -402,10 +405,10 @@ export class ContractCache {
       this.ledgerTracker?.lastKnown ?? fetchedAtLedger;
 
     const ledgersRemaining = Math.max(0, liveUntilLedgerSeq - currentLedger);
-    const wallClockSecs = ledgersRemaining * this.avgLedgerCloseSecs;
+    if (ledgersRemaining === 0) return 0;
 
-    // Cap at fallbackTtl as a floor to avoid caching for 0 seconds
-    // when we're at the very edge of expiry
+    const wallClockSecs = ledgersRemaining * this.avgLedgerCloseSecs;
+    // Never cache for less than 1 second when there are ledgers remaining
     return Math.max(wallClockSecs, 1);
   }
 
@@ -494,6 +497,9 @@ export class ContractCache {
    * Stores a Soroban RPC entry result in L1 and L2.
    * The wall-clock TTL is derived from `liveUntilLedgerSeq` so local expiry
    * tracks the on-chain TTL.
+   *
+   * Entries with `liveUntilLedgerSeq === 0` or that are already at expiry
+   * boundary are not stored (TTL would be 0).
    */
   async set<T>(key: ContractStateKey, entry: SorobanEntryResult<T>): Promise<void> {
     const cacheKey = encodeContractKey(key);
@@ -501,6 +507,10 @@ export class ContractCache {
       entry.liveUntilLedgerSeq,
       entry.fetchedAtLedger
     );
+
+    // Don't cache entries that are already expired
+    if (wallClockTtl === 0) return;
+
     const expiresAt = Date.now() + wallClockTtl * 1000;
 
     // Seed the ledger tracker with the RPC-returned latestLedger so we don't
@@ -592,7 +602,7 @@ export class ContractCache {
     );
   }
 
-  _redisWithTimeout<T>(fn: () => Promise<T>): Promise<T> {
+  private _redisWithTimeout<T>(fn: () => Promise<T>): Promise<T> {
     return Promise.race([
       fn(),
       new Promise<never>((_, reject) =>
