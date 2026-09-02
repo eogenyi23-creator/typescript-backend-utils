@@ -21,7 +21,7 @@
  * - `trustProxy` option to safely honour X-Forwarded-For from a trusted upstream
  */
 
-import Redis from "ioredis";
+import type Redis from "ioredis";
 
 export interface RpcRateLimiterConfig {
   /** Maximum tokens (requests) allowed per window */
