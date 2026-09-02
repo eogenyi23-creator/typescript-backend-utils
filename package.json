@@ -2,8 +2,15 @@
   "name": "soroban-ts-sdk",
   "version": "0.1.0",
   "description": "TypeScript utility SDK for Stellar and Soroban developers — contract state cache, RPC rate limiter, transaction batcher, Horizon event handler, and WASM upload pipeline.",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "files": [
     "dist"
   ],
