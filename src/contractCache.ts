@@ -498,8 +498,10 @@ export class ContractCache {
    * The wall-clock TTL is derived from `liveUntilLedgerSeq` so local expiry
    * tracks the on-chain TTL.
    *
-   * Entries with `liveUntilLedgerSeq === 0` or that are already at expiry
-   * boundary are not stored (TTL would be 0).
+   * Entries with `liveUntilLedgerSeq === 0` and `durability === "temporary"`
+   * are not stored (already gone on-chain, no restore path).
+   * Persistent entries with `liveUntilLedgerSeq === 0` are stored with the
+   * fallback TTL so that a subsequent `get()` can return `ArchivedEntryResult`.
    */
   async set<T>(key: ContractStateKey, entry: SorobanEntryResult<T>): Promise<void> {
     const cacheKey = encodeContractKey(key);
@@ -508,10 +510,18 @@ export class ContractCache {
       entry.fetchedAtLedger
     );
 
-    // Don't cache entries that are already expired
-    if (wallClockTtl === 0) return;
+    // For persistent entries with liveUntilLedgerSeq === 0, the RPC has
+    // signalled the entry is already archived. Store it briefly so that a
+    // subsequent get() can return ArchivedEntryResult instead of a plain miss.
+    const alreadyArchived = entry.liveUntilLedgerSeq === 0 && entry.durability === "persistent";
 
-    const expiresAt = Date.now() + wallClockTtl * 1000;
+    // Don't cache entries that are already expired (except archived persistent ones)
+    if (wallClockTtl === 0 && !alreadyArchived) return;
+
+    // For already-archived entries wallClockTtl is 0; use fallbackTtl so the
+    // entry survives in L1 long enough for get() to return ArchivedEntryResult.
+    const effectiveTtl = wallClockTtl === 0 ? this.fallbackTtl : wallClockTtl;
+    const expiresAt = Date.now() + effectiveTtl * 1000;
 
     // Seed the ledger tracker with the RPC-returned latestLedger so we don't
     // need an extra getLatestLedger call immediately after a fetch.
