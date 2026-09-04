@@ -1,4 +1,4 @@
-# soroban-ts-sdk
+# Typescript-backend-utils
 
 > A TypeScript utility SDK for Stellar and Soroban developers — production-ready building blocks for dApps, indexers, and contract tooling.
 
