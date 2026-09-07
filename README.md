@@ -245,7 +245,7 @@ npm run lint
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
-Open issues labelled [`good first issue`](../../issues?q=label%3A%22good+first+issue%22) are great starting points for first-time contributors. This repository participates in the [Stellar Wave Program](https://www.drips.network/wave) — contributors can earn rewards for merged PRs on open issues.
+Open issues labelled [`good first issue`](../../issues?q=label%3A%22good+first+issue%22) are great starting points for first-time contributors. 
 
 ## Stellar Resources
 
