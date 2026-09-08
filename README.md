@@ -42,7 +42,7 @@ npm install soroban-ts-sdk
 pnpm add soroban-ts-sdk
 ```
 
-**Peer dependencies** (install separately based on what you use):
+**Peer dependencies are optional and only required for the modules you use:** 
 
 ```bash
 npm install @stellar/stellar-sdk ioredis # required by all modules
