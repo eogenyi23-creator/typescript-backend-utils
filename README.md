@@ -32,6 +32,8 @@ Most teams solve each of these in an afternoon, individually, inside their own a
 | [`horizonEventHandler`](src/horizonEventHandler.ts) | Process Horizon streaming events exactly once, even across reconnects. Signature verification + idempotency built in. |
 | [`wasmPipeline`](src/wasmPipeline.ts) | Know that the WASM you're about to deploy is the WASM you actually built. Streaming hash + integrity check before upload. |
 
+Each module has its own test file under tests/ — see Test Coverage below for what's actually verified.
+
 ## Installation
 
 ```bash
@@ -43,7 +45,8 @@ pnpm add soroban-ts-sdk
 **Peer dependencies** (install separately based on what you use):
 
 ```bash
-npm install @stellar/stellar-sdk ioredis
+npm install @stellar/stellar-sdk ioredis # required by all modules
+npm install ioredis                # only if using contractCache or rpcRateLimiter with Redis
 ```
 
 ## Quick Start
