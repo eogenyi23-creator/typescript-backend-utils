@@ -191,15 +191,15 @@ npm run build
 
 ### Test
 
-\`\`\`bash
+```bash
 npm test
-\`\`\`
+```
 
 ### Lint
 
-\`\`\`bash
+```bash
 npm run lint
-\`\`\`
+```
 
 ## Contributing
 
