@@ -1,104 +1,219 @@
-# Typescript-backend-utils
+# typescript-backend-utils
 
 > Production-ready TypeScript building blocks for the parts of Stellar/Soroban backend development that every serious project ends up rebuilding from scratch.
 
-[![CI](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml/badge.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://developers.stellar.org/docs/smart-contracts)
+[![CI](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml/badge.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/LICENSE) [![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://developers.stellar.org/docs/smart-contracts)
 
-## Why this exist?
+## Why this exists
 
 Every backend talking to Stellar/Soroban eventually hits the same five problems, usually in this order:
 
-
-1. Your RPC node starts rate-limiting you because you're calling getContractData on a loop.
-
+1. Your RPC node starts rate-limiting you because you're calling `getContractData` on a loop.
 2. You add a cache, and now you have stale-data bugs.
-
 3. You need to submit a batch of transactions and some inevitably fail, so you write retry logic — badly, under deadline pressure.
-
 4. You wire up a Horizon event stream and get bitten by a duplicate event on reconnect.
-
 5. You deploy a contract and realize you never actually verified the WASM you're uploading matches what you built.
 
-Most teams solve each of these in an afternoon, individually, inside their own app — which means the retry logic, the cache invalidation, and the idempotency checks are all under-tested and never looked at again. This package pulls those five problems out into small, independently-tested modules, so you can pick the ones you need instead of writing your own version of each.
+Most teams solve each of these individually, inside their own app — which means the retry logic, the cache invalidation, and the idempotency checks are all under-tested and never looked at again. This package pulls those five problems out into small, independently-tested modules, so you can pick the ones you need instead of writing your own version of each.
 
+**This is a toolkit, not a framework.** Each module works standalone. Import what you need.
 
-| Module | Problem it solves |
-|--------|-------------|
-| [`contractCache`](src/contractCache.ts) | Stop re-fetching the same on-chain contract state on every request. Two-tier (in-memory LRU + Redis) cache with ledger-aware TTLs. |
-| [`rpcRateLimiter`](src/rpcRateLimiter.ts) | Stop getting throttled by Stellar RPC/Horizon. Token-bucket limiter with blocking and non-blocking modes. |
-| [`transactionBatcher`](src/transactionBatcher.ts) | Submit many Soroban transactions concurrently without silently losing failures. Bounded concurrency + exponential backoff. |
-| [`horizonEventHandler`](src/horizonEventHandler.ts) | Process Horizon streaming events exactly once, even across reconnects. Signature verification + idempotency built in. |
-| [`wasmPipeline`](src/wasmPipeline.ts) | Know that the WASM you're about to deploy is the WASM you actually built. Streaming hash + integrity check before upload. |
+## What is typescript-backend-utils?
 
-Each module has its own test file under tests/ — see Test Coverage below for what's actually verified.
+Building on Stellar means wiring together RPC calls, Soroban contract reads, Horizon event streams, and WASM deployments. The plumbing is repetitive — this SDK packages it into well-tested, composable TypeScript modules so you can focus on your contract logic.
+
+| Module | Description |
+| --- | --- |
+| [`contractCache`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/contractCache.ts) | Two-tier LRU + Redis cache for Soroban contract state reads |
+| [`rpcRateLimiter`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/rpcRateLimiter.ts) | Token-bucket rate limiter for Stellar RPC / Horizon API calls |
+| [`transactionBatcher`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/transactionBatcher.ts) | Concurrent Soroban transaction submission with exponential backoff |
+| [`horizonEventHandler`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/horizonEventHandler.ts) | Secure, idempotent handler for Horizon streaming events |
+| [`wasmPipeline`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/wasmPipeline.ts) | Streaming WASM validation and hash pipeline for Soroban contract uploads |
 
 ## Installation
 
-```bash
+\`\`\`bash
 npm install soroban-ts-sdk
 # or
 pnpm add soroban-ts-sdk
-```
+\`\`\`
 
-**Peer dependencies are optional and only required for the modules you use:** 
+**Peer dependencies** (install separately based on what you use):
 
-```bash
-npm install @stellar/stellar-sdk ioredis # required by all modules
-npm install ioredis                # only if using contractCache or rpcRateLimiter with Redis
-```
+\`\`\`bash
+npm install @stellar/stellar-sdk ioredis
+\`\`\`
 
 ## Quick Start
 
-Pick the module you need — full examples for each are in docs/ (see Documentation below). Minimal example:
+### Contract State Cache
 
-```bash
+Avoid hammering your RPC node with repeated `getContractData` calls on the same key:
+
+\`\`\`typescript
+import { ContractCache } from 'soroban-ts-sdk';
+import { Contract, SorobanRpc } from '@stellar/stellar-sdk';
+
+const server = new SorobanRpc.Server('https://soroban-testnet.stellar.org');
+const cache = new ContractCache({ maxSize: 500, defaultTtlLedgers: 5 });
+
+const balance = await cache.getOrFetch(
+  contractId,
+  'balance',
+  [new Address(userAddress)],
+  (key) => server.getContractData(contractId, key, SorobanRpc.Durability.Persistent)
+);
+\`\`\`
+
+### RPC Rate Limiter
+
+Respect Stellar RPC and Horizon rate limits without dropping requests:
+
+\`\`\`typescript
 import { RpcRateLimiter } from 'soroban-ts-sdk';
+import Redis from 'ioredis';
 
+const redis = new Redis();
 const limiter = RpcRateLimiter.create('soroban-rpc', redis, {
   maxTokens: 100,
   refillRate: 100 / 60,
   windowSeconds: 60,
 });
 
-```
+app.use('/rpc', limiter.middleware());
+\`\`\`
 
-## Test Coverage
+### Transaction Batcher
 
-This is a backend toolkit that other people's production traffic will run through, so test coverage is treated as a hard requirement, not a nice-to-have:
+Submit multiple Soroban transactions concurrently with automatic retry:
 
-- **Unit tests** for every module's core logic (see `tests/*.test.ts`).
-- **Simulated-time tests** for the rate limiter and cache TTL behavior — real clock time isn't used in tests, so they're deterministic and fast.
-- **Idempotency tests** for the Horizon event handler, specifically covering duplicate-event-on-reconnect scenarios.
+\`\`\`typescript
+import { TransactionBatcher } from 'soroban-ts-sdk';
 
-> Current coverage: run `npm run test:coverage` to generate the report locally. *(If you have real coverage numbers, put them here — a specific percentage is more convincing to a reviewer than "well tested.")*
+const batcher = new TransactionBatcher({
+  maxConcurrency: 5,
+  batchSize: 10,
+  retryInterval: 1000,
+  maxRetries: 3,
+});
 
-## Documentation
+const txEnvelopes = [...];
+const results = await batcher.submit(txEnvelopes, (xdr) =>
+  server.sendTransaction(xdr)
+);
 
-- [Architecture overview](./docs/architecture.md) — how the modules relate (or don't) to each other
-- [`contractCache` guide](./docs/contract-cache.md)
-- [`rpcRateLimiter` guide](./docs/rpc-rate-limiter.md)
-- [`transactionBatcher` guide](./docs/transaction-batcher.md)
-- [`horizonEventHandler` guide](./docs/horizon-event-handler.md)
-- [`wasmPipeline` guide](./docs/wasm-pipeline.md)
+results.forEach((r) => {
+  if (r.status === 'fulfilled') console.log('hash:', r.result.hash);
+  else console.error('failed:', r.error.message);
+});
+\`\`\`
 
-## Roadmap
+### Horizon Event Handler
 
-- [ ] Publish to npm under a stable version (currently source-install only)
-- [ ] Redis-backed variant of `transactionBatcher` for multi-process deployments
-- [ ] Fastify middleware helpers alongside the existing Express/Hono ones
+Process Stellar Horizon payment, ledger, and contract events with idempotency:
+
+\`\`\`typescript
+import { HorizonEventHandler } from 'soroban-ts-sdk';
+
+const handler = HorizonEventHandler.create({
+  secret: process.env.HORIZON_WEBHOOK_SECRET!,
+  onEvent: async (event) => {
+    if (event.type === 'payment') {
+      await processPayment(event);
+    }
+  },
+});
+
+app.post('/horizon/events', handler.middleware());
+\`\`\`
+
+### WASM Upload Pipeline
+
+Hash, validate, and prepare a Soroban contract WASM before deploying:
+
+\`\`\`typescript
+import { WasmPipeline } from 'soroban-ts-sdk';
+
+const pipeline = new WasmPipeline({ sandboxDir: './contracts/target' });
+
+const result = await pipeline.process('my_contract.wasm');
+console.log('SHA-256:', result.sha256);
+console.log('Size:   ', result.totalBytes, 'bytes');
+console.log('Valid:  ', result.integrityVerified);
+\`\`\`
+
+## Repository Structure
+
+\`\`\`
+soroban-ts-sdk/
+├── src/
+│   ├── contractCache.ts
+│   ├── rpcRateLimiter.ts
+│   ├── transactionBatcher.ts
+│   ├── horizonEventHandler.ts
+│   ├── wasmPipeline.ts
+│   └── index.ts
+├── tests/
+│   ├── contractCache.test.ts
+│   ├── rpcRateLimiter.test.ts
+│   ├── transactionBatcher.test.ts
+│   ├── horizonEventHandler.test.ts
+│   └── wasmPipeline.test.ts
+├── .github/workflows/
+│   └── ci.yml
+├── package.json
+├── tsconfig.json
+├── CONTRIBUTING.md
+└── SECURITY.md
+\`\`\`
+
+## Development
+
+### Prerequisites
+
+- Node.js 20+
+- npm / pnpm / yarn
+- (Optional) Redis for rate limiter and cache tests
+
+### Setup
+
+\`\`\`bash
+git clone https://github.com/eogenyi23-creator/typescript-backend-utils
+cd typescript-backend-utils
+npm install
+\`\`\`
+
+### Build
+
+\`\`\`bash
+npm run build
+\`\`\`
+
+### Test
+
+\`\`\`bash
+npm test
+\`\`\`
+
+### Lint
+
+\`\`\`bash
+npm run lint
+\`\`\`
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md). Issues tagged [`good first issue`](https://github.com/eogenyi23-creator/typescript-backend-utils/issues?q=label%3A%22good+first+issue%22) are a good place to start, especially if you want to add a new middleware adapter or extend test coverage for edge cases.
+Contributions are welcome! See [CONTRIBUTING.md](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/CONTRIBUTING.md) for guidelines.
 
-## Security
+Issues tagged [`good first issue`](https://github.com/eogenyi23-creator/typescript-backend-utils/issues?q=label%3A%22good+first+issue%22) are beginner-friendly starting points.
 
-See [SECURITY.md](./SECURITY.md) for how to report a vulnerability.
+## Stellar Resources
+
+- [Soroban Documentation](https://developers.stellar.org/docs/smart-contracts)
+- [Stellar SDK for JS](https://github.com/stellar/js-stellar-sdk)
+- [Soroban RPC Reference](https://developers.stellar.org/docs/data/rpc)
+- [Horizon API Reference](https://developers.stellar.org/api/horizon)
 
 ## License
 
-MIT — see [LICENSE](./LICENSE). 
-
-
+MIT — see [LICENSE](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/LICENSE).
