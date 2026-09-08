@@ -145,7 +145,7 @@ console.log('Valid:  ', result.integrityVerified);
 ## Repository Structure
 
 ```
-soroban-ts-sdk/
+typescript-backend-utils/
 ├── src/
 │   ├── contractCache.ts
 │   ├── rpcRateLimiter.ts
