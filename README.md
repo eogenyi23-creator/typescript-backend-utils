@@ -6,9 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://developers.stellar.org/docs/smart-contracts)
 
-## What is Typescript-backend-utils?
+## Why this exist?
 
-Building on Stellar means wiring together RPC calls, Soroban contract reads, Horizon event streams, and WASM deployments. The plumbing is repetitive — this SDK packages it into well-tested, composable TypeScript modules so you can focus on your contract logic.
+Every backend talking to Stellar/Soroban eventually hits the same five problems, usually in this order:
 
 | Module | Description |
 |--------|-------------|
