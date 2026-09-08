@@ -51,6 +51,19 @@ npm install ioredis                # only if using contractCache or rpcRateLimit
 
 ## Quick Start
 
+Pick the module you need — full examples for each are in docs/ (see Documentation below). Minimal example:
+
+```bash
+import { RpcRateLimiter } from 'soroban-ts-sdk';
+
+const limiter = RpcRateLimiter.create('soroban-rpc', redis, {
+  maxTokens: 100,
+  refillRate: 100 / 60,
+  windowSeconds: 60,
+});
+
+```
+
 ### Contract State Cache
 
 Caches Soroban `getLedgerEntries` results using the real on-chain TTL model.
