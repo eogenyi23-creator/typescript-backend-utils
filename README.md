@@ -24,13 +24,13 @@ Every backend talking to Stellar/Soroban eventually hits the same five problems,
 Most teams solve each of these in an afternoon, individually, inside their own app — which means the retry logic, the cache invalidation, and the idempotency checks are all under-tested and never looked at again. This package pulls those five problems out into small, independently-tested modules, so you can pick the ones you need instead of writing your own version of each.
 
 
-| Module | Description |
+| Module | Problem it solves |
 |--------|-------------|
 | [`contractCache`](src/contractCache.ts) | Stop re-fetching the same on-chain contract state on every request. Two-tier (in-memory LRU + Redis) cache with ledger-aware TTLs. |
 | [`rpcRateLimiter`](src/rpcRateLimiter.ts) | Stop getting throttled by Stellar RPC/Horizon. Token-bucket limiter with blocking and non-blocking modes. |
-| [`transactionBatcher`](src/transactionBatcher.ts) | Concurrent Soroban transaction submission with exponential backoff and `submitWithResults()` helper |
-| [`horizonEventHandler`](src/horizonEventHandler.ts) | Secure, idempotent Horizon event handler with in-memory and Redis-backed deduplication |
-| [`wasmPipeline`](src/wasmPipeline.ts) | Streaming WASM validation (`validate()`), hash, and manifest pipeline for Soroban contract uploads |
+| [`transactionBatcher`](src/transactionBatcher.ts) | Submit many Soroban transactions concurrently without silently losing failures. Bounded concurrency + exponential backoff. |
+| [`horizonEventHandler`](src/horizonEventHandler.ts) | Process Horizon streaming events exactly once, even across reconnects. Signature verification + idempotency built in. |
+| [`wasmPipeline`](src/wasmPipeline.ts) | Know that the WASM you're about to deploy is the WASM you actually built. Streaming hash + integrity check before upload. |
 
 ## Installation
 
