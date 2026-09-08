@@ -21,6 +21,8 @@ Every backend talking to Stellar/Soroban eventually hits the same five problems,
 
 5. You deploy a contract and realize you never actually verified the WASM you're uploading matches what you built.
 
+Most teams solve each of these in an afternoon, individually, inside their own app — which means the retry logic, the cache invalidation, and the idempotency checks are all under-tested and never looked at again. This package pulls those five problems out into small, independently-tested modules, so you can pick the ones you need instead of writing your own version of each.
+
 
 | Module | Description |
 |--------|-------------|
