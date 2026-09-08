@@ -32,17 +32,17 @@ Building on Stellar means wiring together RPC calls, Soroban contract reads, Hor
 
 ## Installation
 
-\`\`\`bash
+```bash
 npm install soroban-ts-sdk
 # or
 pnpm add soroban-ts-sdk
-\`\`\`
+```
 
 **Peer dependencies** (install separately based on what you use):
 
-\`\`\`bash
+```bash
 npm install @stellar/stellar-sdk ioredis
-\`\`\`
+```
 
 ## Quick Start
 
@@ -50,7 +50,7 @@ npm install @stellar/stellar-sdk ioredis
 
 Avoid hammering your RPC node with repeated `getContractData` calls on the same key:
 
-\`\`\`typescript
+```typescript
 import { ContractCache } from 'soroban-ts-sdk';
 import { Contract, SorobanRpc } from '@stellar/stellar-sdk';
 
@@ -63,13 +63,13 @@ const balance = await cache.getOrFetch(
   [new Address(userAddress)],
   (key) => server.getContractData(contractId, key, SorobanRpc.Durability.Persistent)
 );
-\`\`\`
+```
 
 ### RPC Rate Limiter
 
 Respect Stellar RPC and Horizon rate limits without dropping requests:
 
-\`\`\`typescript
+```typescript
 import { RpcRateLimiter } from 'soroban-ts-sdk';
 import Redis from 'ioredis';
 
@@ -81,13 +81,13 @@ const limiter = RpcRateLimiter.create('soroban-rpc', redis, {
 });
 
 app.use('/rpc', limiter.middleware());
-\`\`\`
+```
 
 ### Transaction Batcher
 
 Submit multiple Soroban transactions concurrently with automatic retry:
 
-\`\`\`typescript
+```typescript
 import { TransactionBatcher } from 'soroban-ts-sdk';
 
 const batcher = new TransactionBatcher({
@@ -106,13 +106,13 @@ results.forEach((r) => {
   if (r.status === 'fulfilled') console.log('hash:', r.result.hash);
   else console.error('failed:', r.error.message);
 });
-\`\`\`
+```
 
 ### Horizon Event Handler
 
 Process Stellar Horizon payment, ledger, and contract events with idempotency:
 
-\`\`\`typescript
+```typescript
 import { HorizonEventHandler } from 'soroban-ts-sdk';
 
 const handler = HorizonEventHandler.create({
@@ -125,13 +125,13 @@ const handler = HorizonEventHandler.create({
 });
 
 app.post('/horizon/events', handler.middleware());
-\`\`\`
+```
 
 ### WASM Upload Pipeline
 
 Hash, validate, and prepare a Soroban contract WASM before deploying:
 
-\`\`\`typescript
+```typescript
 import { WasmPipeline } from 'soroban-ts-sdk';
 
 const pipeline = new WasmPipeline({ sandboxDir: './contracts/target' });
@@ -140,11 +140,11 @@ const result = await pipeline.process('my_contract.wasm');
 console.log('SHA-256:', result.sha256);
 console.log('Size:   ', result.totalBytes, 'bytes');
 console.log('Valid:  ', result.integrityVerified);
-\`\`\`
+```
 
 ## Repository Structure
 
-\`\`\`
+```
 soroban-ts-sdk/
 ├── src/
 │   ├── contractCache.ts
@@ -165,7 +165,7 @@ soroban-ts-sdk/
 ├── tsconfig.json
 ├── CONTRIBUTING.md
 └── SECURITY.md
-\`\`\`
+```
 
 ## Development
 
@@ -177,17 +177,17 @@ soroban-ts-sdk/
 
 ### Setup
 
-\`\`\`bash
+```bash
 git clone https://github.com/eogenyi23-creator/typescript-backend-utils
 cd typescript-backend-utils
 npm install
-\`\`\`
+```
 
 ### Build
 
-\`\`\`bash
+```bash
 npm run build
-\`\`\`
+```
 
 ### Test
 
