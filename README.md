@@ -26,8 +26,8 @@ Most teams solve each of these in an afternoon, individually, inside their own a
 
 | Module | Description |
 |--------|-------------|
-| [`contractCache`](src/contractCache.ts) | Ledger-sequence-aware two-tier LRU+Redis cache for Soroban contract state — expiry driven by `liveUntilLedgerSeq`, with distinct handling for archived persistent entries |
-| [`rpcRateLimiter`](src/rpcRateLimiter.ts) | Token-bucket rate limiter (Redis-backed) for Stellar RPC / Horizon API calls, with `trustProxy` support |
+| [`contractCache`](src/contractCache.ts) | Stop re-fetching the same on-chain contract state on every request. Two-tier (in-memory LRU + Redis) cache with ledger-aware TTLs. |
+| [`rpcRateLimiter`](src/rpcRateLimiter.ts) | Stop getting throttled by Stellar RPC/Horizon. Token-bucket limiter with blocking and non-blocking modes. |
 | [`transactionBatcher`](src/transactionBatcher.ts) | Concurrent Soroban transaction submission with exponential backoff and `submitWithResults()` helper |
 | [`horizonEventHandler`](src/horizonEventHandler.ts) | Secure, idempotent Horizon event handler with in-memory and Redis-backed deduplication |
 | [`wasmPipeline`](src/wasmPipeline.ts) | Streaming WASM validation (`validate()`), hash, and manifest pipeline for Soroban contract uploads |
