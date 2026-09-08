@@ -1,6 +1,6 @@
 # Typescript-backend-utils
 
-> A TypeScript utility SDK for Stellar and Soroban developers — production-ready building blocks for dApps, indexers, and contract tooling.
+> Production-ready TypeScript building blocks for the parts of Stellar/Soroban backend development that every serious project ends up rebuilding from scratch.
 
 [![CI](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml/badge.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
