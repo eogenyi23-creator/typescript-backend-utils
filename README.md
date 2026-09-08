@@ -10,6 +10,18 @@
 
 Every backend talking to Stellar/Soroban eventually hits the same five problems, usually in this order:
 
+
+1. Your RPC node starts rate-limiting you because you're calling getContractData on a loop.
+
+2. You add a cache, and now you have stale-data bugs.
+
+3. You need to submit a batch of transactions and some inevitably fail, so you write retry logic — badly, under deadline pressure.
+
+4. You wire up a Horizon event stream and get bitten by a duplicate event on reconnect.
+
+5. You deploy a contract and realize you never actually verified the WASM you're uploading matches what you built.
+
+
 | Module | Description |
 |--------|-------------|
 | [`contractCache`](src/contractCache.ts) | Ledger-sequence-aware two-tier LRU+Redis cache for Soroban contract state — expiry driven by `liveUntilLedgerSeq`, with distinct handling for archived persistent entries |
