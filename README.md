@@ -64,226 +64,41 @@ const limiter = RpcRateLimiter.create('soroban-rpc', redis, {
 
 ```
 
-### Contract State Cache
+## Test Coverage
 
-Caches Soroban `getLedgerEntries` results using the real on-chain TTL model.
+This is a backend toolkit that other people's production traffic will run through, so test coverage is treated as a hard requirement, not a nice-to-have:
 
-Every Soroban CONTRACT_DATA entry has a `liveUntilLedgerSeq` field returned by the RPC — the last ledger at which the entry is live. This cache stores that value alongside each entry and checks it against the current network ledger on every read, so expiry is driven by ledger sequence rather than a wall-clock guess.
+- **Unit tests** for every module's core logic (see `tests/*.test.ts`).
+- **Simulated-time tests** for the rate limiter and cache TTL behavior — real clock time isn't used in tests, so they're deterministic and fast.
+- **Idempotency tests** for the Horizon event handler, specifically covering duplicate-event-on-reconnect scenarios.
 
-**Persistent vs temporary durability:**
-- **Persistent** entries are archived (not deleted) when their TTL expires. Restoring them requires a `RestoreFootprintOperation`. The cache surfaces this as `{ entryArchived: true }` rather than a generic miss, so callers know a restore is needed before refetching.
-- **Temporary** entries are permanently deleted on-chain when their TTL expires. The cache returns a plain `undefined` miss.
+> Current coverage: run `npm run test:coverage` to generate the report locally. *(If you have real coverage numbers, put them here — a specific percentage is more convincing to a reviewer than "well tested.")*
 
-```typescript
-import { ContractCache, LedgerSequenceTracker } from 'soroban-ts-sdk';
-import { SorobanRpc, xdr, Address } from '@stellar/stellar-sdk';
+## Documentation
 
-const server = new SorobanRpc.Server('https://soroban-testnet.stellar.org');
+- [Architecture overview](./docs/architecture.md) — how the modules relate (or don't) to each other
+- [`contractCache` guide](./docs/contract-cache.md)
+- [`rpcRateLimiter` guide](./docs/rpc-rate-limiter.md)
+- [`transactionBatcher` guide](./docs/transaction-batcher.md)
+- [`horizonEventHandler` guide](./docs/horizon-event-handler.md)
+- [`wasmPipeline` guide](./docs/wasm-pipeline.md)
 
-// Tracks current ledger sequence, re-fetching at most once every 4 s
-const tracker = new LedgerSequenceTracker(
-  () => server.getLatestLedger().then(r => r.sequence)
-);
+## Roadmap
 
-const cache = new ContractCache({ maxSize: 500 }, null, tracker);
-
-const ledgerKey = xdr.LedgerKey.contractData(
-  new xdr.LedgerKeyContractData({
-    contract: new Address(contractId).toScAddress(),
-    key: xdr.ScVal.scvSymbol('balance'),
-    durability: xdr.ContractDataDurability.persistent(),
-  })
-);
-
-const result = await cache.getOrFetch(
-  { contractId, storageKey: ledgerKey.toXDR('base64') },
-  async () => {
-    const resp = await server.getLedgerEntries(ledgerKey);
-    const entry = resp.entries[0];
-    return {
-      value:               decodeBalanceScVal(entry.xdr),
-      liveUntilLedgerSeq: entry.liveUntilLedgerSeq,
-      durability:         'persistent',
-      fetchedAtLedger:    resp.latestLedger,
-    };
-  }
-);
-
-if (result.entryArchived) {
-  // Entry has expired on-chain. Submit RestoreFootprintOperation, then retry.
-  console.log('Entry archived at ledger', result.liveUntilLedgerSeq);
-  await submitRestoreFootprint(contractId, ledgerKey);
-} else {
-  console.log('Balance:', result.value);
-}
-```
-
-### RPC Rate Limiter
-
-Token-bucket rate limiter backed by Redis. The `trustProxy` option lets you safely honour `X-Forwarded-For` headers when sitting behind a trusted reverse proxy.
-
-```typescript
-import { RpcRateLimiter } from 'soroban-ts-sdk';
-import Redis from 'ioredis';
-
-const redis = new Redis();
-
-// Direct exposure — use socket IP only (safe default)
-const limiter = RpcRateLimiter.create('soroban-rpc', redis);
-
-// Behind a trusted reverse proxy (nginx, AWS ALB, Cloudflare, etc.)
-const limiterWithProxy = RpcRateLimiter.create(
-  'soroban-rpc', redis, 'public', {}, { trustProxy: true }
-);
-
-// In your Express/Hono middleware:
-app.use('/rpc', limiter.middleware());
-```
-
-### Transaction Batcher
-
-Submit multiple Soroban transactions concurrently with automatic retry on transient errors (`txInsufficientFee`, `txBadSeq`).
-
-```typescript
-import { TransactionBatcher } from 'soroban-ts-sdk';
-
-const batcher = new TransactionBatcher({
-  maxConcurrency: 5,
-  batchSize: 10,
-  retryInterval: 1000,
-  maxRetries: 3,
-});
-
-const tasks = txEnvelopes.map(xdr => () => server.sendTransaction(xdr));
-
-// Option A — flat array of records
-const records = await batcher.run(tasks);
-
-// Option B — typed split into fulfilled / rejected buckets
-const { fulfilled, rejected } = await batcher.submitWithResults(tasks);
-for (const r of fulfilled) console.log('hash:', r.result.hash);
-for (const r of rejected)  console.error('error:', r.error.message);
-```
-
-### Horizon Event Handler
-
-Process Stellar Horizon payment, ledger, and contract events with HMAC signature verification and idempotency.
-
-```typescript
-import { HorizonEventHandler, RedisIdempotencyStore } from 'soroban-ts-sdk';
-import Redis from 'ioredis';
-
-// Single-instance / dev — in-memory deduplication
-const handler = HorizonEventHandler.create({
-  secret: process.env.HORIZON_WEBHOOK_SECRET!,
-  onEvent: async (event) => {
-    if (event.type === 'payment') await processPayment(event);
-  },
-});
-
-// Production — Redis-backed deduplication (survives restarts, works across instances)
-const idempotency = new RedisIdempotencyStore(new Redis(), { ttlSeconds: 300 });
-const handlerProd = HorizonEventHandler.create(
-  { secret: process.env.HORIZON_WEBHOOK_SECRET! },
-  idempotency
-);
-
-// Express route
-app.post('/horizon/events', handler.middleware());
-```
-
-### WASM Upload Pipeline
-
-Validate, hash, and prepare a Soroban contract WASM before uploading to the Stellar network.
-
-```typescript
-import { WasmPipeline } from 'soroban-ts-sdk';
-
-const pipeline = new WasmPipeline({ sandboxDir: './contracts/target/wasm32v1-none/release' });
-
-// Validate first — throws immediately if the file is not a valid WASM binary,
-// preventing a wasted on-chain upload transaction.
-await pipeline.validate('my_contract.wasm');
-
-// Process — streams the file, computes SHA-256, writes a manifest JSON.
-const manifest = await pipeline.process('my_contract.wasm');
-console.log('wasm-hash:', manifest.sha256);   // use with `stellar contract install --wasm-hash`
-console.log('size:     ', manifest.totalBytes, 'bytes');
-console.log('valid:    ', manifest.wasmMagicValid && manifest.integrityVerified);
-```
-
-## Repository Structure
-
-```
-soroban-ts-sdk/
-├── src/
-│   ├── contractCache.ts        # Ledger-sequence-aware Soroban contract state cache
-│   ├── rpcRateLimiter.ts       # Token-bucket rate limiter for RPC/Horizon
-│   ├── transactionBatcher.ts   # Concurrent transaction submission + retry
-│   ├── horizonEventHandler.ts  # Horizon streaming event handler
-│   ├── wasmPipeline.ts         # WASM streaming hash + validation pipeline
-│   └── index.ts                # Barrel export
-├── tests/
-│   ├── contractCache.test.ts
-│   ├── rpcRateLimiter.test.ts
-│   ├── transactionBatcher.test.ts
-│   ├── horizonEventHandler.test.ts
-│   └── wasmPipeline.test.ts
-├── .github/workflows/
-│   └── ci.yml                  # Build + test on every push/PR (Node 20 & 22)
-├── package.json
-├── tsconfig.json
-├── CONTRIBUTING.md
-└── SECURITY.md
-```
-
-## Development
-
-### Prerequisites
-
-- Node.js 20+
-- npm / pnpm / yarn
-- (Optional) Redis for rate limiter and cache tests
-
-### Setup
-
-```bash
-git clone https://github.com/eogenyi23-creator/typescript-backend-utils
-cd typescript-backend-utils
-npm install
-```
-
-### Build
-
-```bash
-npm run build
-```
-
-### Test
-
-```bash
-npm test
-```
-
-### Lint / Type-check
-
-```bash
-npm run lint
-```
+- [ ] Publish to npm under a stable version (currently source-install only)
+- [ ] Redis-backed variant of `transactionBatcher` for multi-process deployments
+- [ ] Fastify middleware helpers alongside the existing Express/Hono ones
 
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md). Issues tagged [`good first issue`](https://github.com/eogenyi23-creator/typescript-backend-utils/issues?q=label%3A%22good+first+issue%22) are a good place to start, especially if you want to add a new middleware adapter or extend test coverage for edge cases.
 
-Open issues labelled [`good first issue`](../../issues?q=label%3A%22good+first+issue%22) are great starting points for first-time contributors. 
+## Security
 
-## Stellar Resources
-
-- [Soroban Documentation](https://developers.stellar.org/docs/smart-contracts)
-- [Stellar SDK for JS](https://github.com/stellar/js-stellar-sdk)
-- [Soroban RPC Reference](https://developers.stellar.org/docs/data/rpc)
-- [Horizon API Reference](https://developers.stellar.org/api/horizon)
+See [SECURITY.md](./SECURITY.md) for how to report a vulnerability.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](./LICENSE). 
+
+
