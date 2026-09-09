@@ -145,14 +145,14 @@ console.log('Valid:  ', result.integrityVerified);
 ## Repository Structure
 
 ```
-typescript-backend-utils/
+soroban-ts-sdk/
 ├── src/
-│   ├── contractCache.ts
-│   ├── rpcRateLimiter.ts
-│   ├── transactionBatcher.ts
-│   ├── horizonEventHandler.ts
-│   ├── wasmPipeline.ts
-│   └── index.ts
+│   ├── contractCache.ts        # Soroban contract state LRU+Redis cache
+│   ├── rpcRateLimiter.ts       # Token-bucket rate limiter for RPC/Horizon
+│   ├── transactionBatcher.ts   # Concurrent transaction submission + retry
+│   ├── horizonEventHandler.ts  # Horizon streaming event handler
+│   ├── wasmPipeline.ts         # WASM streaming hash + validation pipeline
+│   └── index.ts                # Barrel export
 ├── tests/
 │   ├── contractCache.test.ts
 │   ├── rpcRateLimiter.test.ts
@@ -160,7 +160,7 @@ typescript-backend-utils/
 │   ├── horizonEventHandler.test.ts
 │   └── wasmPipeline.test.ts
 ├── .github/workflows/
-│   └── ci.yml
+│   └── ci.yml                  # Build + test on every push/PR
 ├── package.json
 ├── tsconfig.json
 ├── CONTRIBUTING.md
