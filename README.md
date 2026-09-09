@@ -145,7 +145,7 @@ console.log('Valid:  ', result.integrityVerified);
 ## Repository Structure
 
 ```
-soroban-ts-sdk/
+typescript-backend-utils/
 ├── src/
 │   ├── contractCache.ts        # Soroban contract state LRU+Redis cache
 │   ├── rpcRateLimiter.ts       # Token-bucket rate limiter for RPC/Horizon
