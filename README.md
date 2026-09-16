@@ -205,8 +205,6 @@ npm run lint
 
 Contributions are welcome! See [CONTRIBUTING.md](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/CONTRIBUTING.md) for guidelines.
 
-Issues tagged [`good first issue`](https://github.com/eogenyi23-creator/typescript-backend-utils/issues?q=label%3A%22good+first+issue%22) are beginner-friendly starting points.
-
 ## Stellar Resources
 
 - [Soroban Documentation](https://developers.stellar.org/docs/smart-contracts)
