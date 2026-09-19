@@ -47,3 +47,17 @@ scan quickly.
 **Branch:** feat/changelog → main (awaiting PR merge)
 
 ---
+
+---
+
+## 2026-09-19 — Branches: fix/ci-run-tests, feat/publish-workflow, feat/v0.1.0-tag
+
+**What changed:**
+- `fix/ci-run-tests`: Added `cache: "npm"` to the CI workflow's `setup-node` step for faster dependency installs on repeated runs
+- `feat/publish-workflow`: Added `.github/workflows/publish.yml` — triggers on `v*.*.*` tags, installs, builds, then publishes to npm using `NPM_TOKEN` secret
+- `feat/v0.1.0-tag`: Fixed broken `[0.1.0]` link in `CHANGELOG.md` (had trailing `/**` making it an invalid URL)
+
+**Why:**
+CI was missing npm caching, causing full reinstalls on every run. The publish workflow enables automated npm releases — previously there was no way to publish without manual steps. The CHANGELOG link pointed to a non-existent URL due to a trailing `/**`.
+
+**Branches:** fix/ci-run-tests, feat/publish-workflow, feat/v0.1.0-tag → main (awaiting merge)
