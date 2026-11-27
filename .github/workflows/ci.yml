@@ -40,6 +40,9 @@ jobs:
       - name: Check README examples match example files
         run: npm run check:readme-examples
 
+      - name: Check claims audit
+        run: npm run check:claims
+
       - name: Run unit tests
         run: npm test -- --testPathIgnorePatterns="tests/integration"
 

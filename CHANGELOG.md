@@ -9,6 +9,51 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — docs/honest-docs-and-claims (Task 4: Claims audit)
+
+#### Changes
+- Created `docs/claims-audit.md` with 46 rows in the main claim table and 6 rows in
+  the live-evidence table.
+  - 45 rows: `test-backed` (each names a real test file and test title)
+  - 1 row: `code-only` (Redis Cluster Lua atomicity note in SECURITY.md — cannot be
+    unit-tested without a Cluster setup)
+  - 0 rows: `not verified`
+- Added 6 `RedisIdempotencyStore` unit tests to `tests/horizonEventHandler.test.ts`
+  (using a minimal mock Redis), promoting claim #35 from `code-only` to `test-backed`.
+  Tests cover: `hasAndMark` returns false on first call, returns true on duplicate,
+  `has()` before and after `mark()`, NX semantics (no overwrite), custom key prefix.
+- Created `scripts/check-claims.mjs`: reads the claim table, validates each
+  `test-backed` row's named file exists in `tests/` and the leaf test title appears
+  in that file, reports counts by status. Exits non-zero on any failure.
+- Added `check:claims` npm script.
+- Added `check:claims` step to the `build-and-test` CI job after `check:readme-examples`.
+
+#### Why
+Surfaced the gap in `RedisIdempotencyStore` test coverage (SET NX EX behaviour). The
+audit document gives a single place to track what is and isn't verified so the state
+is honest to both contributors and consumers.
+
+#### Verification
+```
+node scripts/check-claims.mjs →
+  check-claims: 46 rows validated.
+  test-backed: 45  code-only: 1  not-verified: 0 ✓
+
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 128 passed (122 + 6 new)
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims → 46 rows validated. test-backed: 45  code-only: 1 ✓
+```
+
+#### Limits
+- Claim #46 (Redis Cluster Lua atomicity): `code-only`. Testing would require a real
+  Redis Cluster; see SECURITY.md note.
+- Live-evidence table: all 6 rows marked `not yet run`; a later part will fill these.
+
+---
+
 ### 2026-11-27 — docs/honest-docs-and-claims (Task 3: Fix the Horizon handler description)
 
 #### Changes

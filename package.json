@@ -22,6 +22,7 @@
     "lint": "tsc --noEmit",
     "check:examples": "tsc --project tsconfig.examples.json",
     "check:readme-examples": "node scripts/check-readme-examples.mjs",
+    "check:claims": "node scripts/check-claims.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
