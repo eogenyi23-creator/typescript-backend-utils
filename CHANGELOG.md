@@ -9,6 +9,183 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/verify-and-readme (Task 4: Test against real Redis in CI)
+
+#### Changes
+- Created `tests/integration/redis.test.ts` with 6 integration tests for
+  `rpcRateLimiter` and `contractCache`, selected by the `REDIS_URL` env var and
+  skipped (with a clear message) when it is not set.
+  - `rpcRateLimiter` (3 tests): token bucket really limits under concurrent callers;
+    two independent limiter instances share one Redis bucket; fails open when Redis
+    is unreachable.
+  - `contractCache` (3 tests): writes to Redis and back-fills L1 on a fresh cache
+    instance; serves from L1 without hitting Redis on subsequent reads; falls back
+    to L1 when Redis is down.
+- Added npm script `test:integration` (`jest --testPathPattern=tests/integration`).
+- Updated `.github/workflows/ci.yml`:
+  - Existing `build-and-test` job now excludes `tests/integration` from `npm test`
+    and `test:coverage` via `--testPathIgnorePatterns`.
+  - New `integration-tests` job starts a `redis:7` service container, sets
+    `REDIS_URL=redis://localhost:6379`, and runs `npm run test:integration`.
+    The existing unit-test job is fully independent of Redis.
+
+#### Why
+The rate limiter and cache claim atomic Redis behaviour that cannot be exercised
+with a mock (Lua script race conditions, cross-instance bucket sharing, graceful
+degradation). Integration tests against a live Redis verify these guarantees.
+
+#### Verification
+```
+npm run test:integration  (no REDIS_URL set) →
+  Test Suites: 1 skipped
+  Tests:       6 skipped, 6 total  — skips cleanly with descriptive label
+
+npm test -- --testPathIgnorePatterns="tests/integration" →
+  122 passed, 5 suites
+
+Redis not available in this environment.
+Integration tests were not executed locally; CI run against redis:7 service
+container is required. See .github/workflows/ci.yml integration-tests job.
+```
+
+#### Limits
+- Integration tests not executed locally (no Redis in this dev environment).
+- Relies on CI redis:7 service container for real execution.
+- `RedisIdempotencyStore.hasAndMark()` duplicate-detection path (lines 150-191
+  of horizonEventHandler.ts) is not covered by integration tests in this task;
+  it requires a Redis-backed idempotency test which would fit in a separate
+  horizonEventHandler integration test file.
+
+---
+
+### 2026-11-27 — fix/verify-and-readme (Task 3: Close real test gaps)
+
+#### Changes
+- Added 23 new tests across four modules (99 → 122 total).
+- `transactionBatcher.test.ts`: added `submitWithResults helper` and `error edge cases`
+  groups (5 new tests): typed bucket split, AbortSignal forwarding, non-Error rejection
+  wrapping, mid-sleep abort, pre-aborted signal before batch starts.
+- `rpcRateLimiter.test.ts`: added `trustProxy and IP resolution` and `RpcRateLimiter class`
+  groups (7 new tests): X-Forwarded-For string/array/comma-list parsing, socket.remoteAddress
+  fallback, 'unknown' fallback, `RpcRateLimiter.create()` + `middleware()` OO interface.
+- `horizonEventHandler.test.ts`: added `invalid request body`, `HorizonEventQueue`, and
+  `HorizonEventHandler class` groups (5 new tests): malformed JSON 400, missing `data` field
+  400, array `data` field 400, `queue.peek()`, `HorizonEventHandler.create()` + `middleware()`.
+- `wasmPipeline.test.ts`: added `WasmPipeline class` group (6 new tests): `process()`,
+  `validate()` on valid/invalid/too-small files, path traversal, missing file.
+
+#### Why
+Uncovered paths from baseline that matter for correctness or security:
+- `trustProxy` path: bypasses IP spoofing protection if the wrong code is used
+- `resolveIdentifier` socket fallback: would have silently used 'unknown' for all requests
+- `RpcRateLimiter` OO interface: 0% covered despite being the documented API
+- `HorizonEventHandler` OO interface: 0% covered despite being the documented API
+- Invalid JSON body path: could mask content-type bugs
+- `validateHorizonPayload` data-field checks: incorrect data would skip the validator
+- `WasmPipeline.validate()`: the safety guard before expensive contract uploads — entirely untested
+- `submitWithResults`: the main typed helper — not directly tested
+- Abort mid-backoff: could leave tasks stuck in retry loops after cancellation
+
+#### Verification
+```
+npm test → 122 passed, 5 suites (was 99)
+
+Coverage before → after:
+  All files:              76.5% → 87.55% stmts,  65.47% → 77.97% branch
+  contractCache.ts:       86.5% → 86.5%  stmts,  83.87% → 83.87% branch  (no new tests added)
+  horizonEventHandler.ts: 72.04% → 80.64% stmts, 67.39% → 76.08% branch
+  rpcRateLimiter.ts:      78.78% → 100%   stmts,  41.66% → 91.66% branch
+  transactionBatcher.ts:  66.66% → 86.66% stmts,  36.36% → 63.63% branch
+  wasmPipeline.ts:        74.03% → 92.3%  stmts,  53.84% → 73.07% branch
+```
+
+#### Limits
+- `RedisIdempotencyStore` (lines 150–191) and its `hasAndMark` duplicate-detection path
+  remain untested without a live Redis; those are covered in Task 4 integration tests.
+- `transactionBatcher.ts` lines 93-94 (`sleep()` pre-abort via pre-set signal) remain at
+  partial coverage — the test covers the batch-level abort, not the helper function branch
+  directly (the branch is covered indirectly through the existing abort tests).
+
+---
+
+### 2026-11-27 — fix/verify-and-readme (Task 2: Make every README example compile against the real API)
+
+#### Changes
+- Created `examples/` with one file per module (`contract-cache.ts`, `rpc-rate-limiter.ts`,
+  `transaction-batcher.ts`, `horizon-event-handler.ts`, `wasm-pipeline.ts`).
+- Added `tsconfig.examples.json` with a `paths` alias so examples import from
+  `soroban-ts-sdk` exactly as a consumer would, resolved to `./src/index.ts` during
+  type-checking.
+- Added npm scripts: `check:examples` (`tsc --project tsconfig.examples.json`),
+  `check:readme-examples` (`node scripts/check-readme-examples.mjs`),
+  `test:coverage`, `test:integration`.
+- Added `scripts/check-readme-examples.mjs`: reads `<!-- example: <name> -->` markers in
+  the README and asserts each following fenced TypeScript block appears verbatim in
+  `examples/<name>.ts`. Fails if no markers are found, an example file is missing,
+  or the snippet is not found.
+- Updated `.github/workflows/ci.yml` to run `check:examples`, `check:readme-examples`,
+  and `test:coverage` after the build step.
+- Rewrote the five README Quick Start snippets to match the real exported API.
+
+#### Why (errors in the original README)
+1. `SorobanRpc.Server` / `SorobanRpc.Durability` — `SorobanRpc` is not exported by
+   `@stellar/stellar-sdk` v13.x. The correct namespace is `rpc`.
+2. `new Address(userAddress)` — `Address` was used without being imported.
+3. `cache.getOrFetch(contractId, 'balance', [new Address(...)], (key) => ...)` — wrong
+   call signature. The real signature is `getOrFetch(key: ContractStateKey, fetch: () =>
+   Promise<SorobanEntryResult<T>>)`: two arguments, not four.
+4. `RpcRateLimiter.create('soroban-rpc', redis, { maxTokens, refillRate, windowSeconds })` —
+   the third argument is a tier string (`'public'` | `'authenticated'`), not a config
+   object. Config overrides go in the fourth argument.
+5. `batcher.submit(txEnvelopes, fn)` — `submit` does not exist. The method is
+   `submitWithResults(tasks)` where `tasks` is an array of `() => Promise<T>` functions,
+   not raw transaction envelopes.
+
+#### Verification
+```
+npm run check:examples      → exit 0 (5 files type-checked with tsc --noEmit)
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run lint                → exit 0
+npm run build               → exit 0
+npm test                    → 99 tests, 5 suites, all passing
+```
+
+#### Limits
+Examples are type-checked only (`--noEmit`). They do not run against a real Stellar
+network or Redis instance. `wasm-pipeline.ts` is not executed (no `.wasm` file present).
+
+---
+
+### 2026-11-27 — fix/verify-and-readme (Task 1: Baseline audit)
+
+#### Changes
+- No code changes. Recorded exact baseline state before any modifications.
+
+#### Why
+Step 0 audit to confirm whether anything fails before touching the repo.
+
+#### Verification
+```
+Node v24.22.2, npm 11.19.1
+
+npm run lint   → exit 0  (tsc --noEmit, no errors)
+npm run build  → exit 0
+npm test -- --coverage → 5 suites, 99 tests, 0 failures
+
+Coverage:
+  contractCache.ts       86.5% stmts  83.87% branch
+  horizonEventHandler.ts 72.04% stmts 67.39% branch
+  rpcRateLimiter.ts      78.78% stmts 41.66% branch
+  transactionBatcher.ts  66.66% stmts 36.36% branch
+  wasmPipeline.ts        74.03% stmts 53.84% branch
+  All files              76.5%  stmts 65.47% branch
+```
+
+#### Limits
+No failures at baseline. All 99 tests pass on Node v24.22.2.
+
+---
+
 ### Changed
 - Renamed package from `typescript-backend-utils` to `soroban-ts-sdk` to clearly
   reflect the package's Soroban/Stellar focus

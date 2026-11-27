@@ -159,4 +159,72 @@ describe("TransactionBatcher", () => {
       expect(Array.isArray(status.rejected)).toBe(true);
     });
   });
+
+  describe("submitWithResults helper", () => {
+    it("returns fulfilled and rejected in typed buckets", async () => {
+      const batcher = new TransactionBatcher<string>({ ...defaultConfig, maxRetries: 0 });
+      const tasks: TransactionTask<string>[] = [
+        resolveAfter("ok-1"),
+        alwaysReject("txBadSeq"),
+        resolveAfter("ok-2"),
+      ];
+      const { fulfilled, rejected } = await batcher.submitWithResults(tasks);
+      expect(fulfilled).toHaveLength(2);
+      expect(rejected).toHaveLength(1);
+      expect(fulfilled[0].result).toBe("ok-1");
+      expect(rejected[0].error.message).toBe("txBadSeq");
+    });
+
+    it("forwards AbortSignal to run()", async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const batcher = new TransactionBatcher<string>({ maxConcurrency: 1, batchSize: 10, retryInterval: 10 });
+      const tasks: TransactionTask<string>[] = [resolveAfter("x"), resolveAfter("y")];
+      const { rejected } = await batcher.submitWithResults(tasks, controller.signal);
+      // signal was already aborted — all tasks should be rejected
+      expect(rejected.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("error edge cases", () => {
+    it("wraps non-Error rejections in an Error object", async () => {
+      const batcher = new TransactionBatcher<string>({ maxConcurrency: 1, batchSize: 5, retryInterval: 10, maxRetries: 0 });
+      const task: TransactionTask<string> = () => Promise.reject("plain string error");
+      const [record] = await batcher.run([task]);
+      expect(record.status).toBe("rejected");
+      expect(record.error?.message).toBe("plain string error");
+    });
+
+    it("aborts mid-sleep when signal fires during backoff", async () => {
+      const controller = new AbortController();
+      const batcher = new TransactionBatcher<string>({
+        maxConcurrency: 1,
+        batchSize: 5,
+        retryInterval: 500, // long backoff to ensure abort fires during sleep
+        maxRetries: 3,
+        maxJitter: 0,
+      });
+      let attempts = 0;
+      const task: TransactionTask<string> = () => {
+        attempts++;
+        if (attempts === 1) {
+          // Abort after first failure, during the sleep phase
+          setTimeout(() => controller.abort(), 50);
+        }
+        return Promise.reject(new Error("txInsufficientFee"));
+      };
+      const [record] = await batcher.run([task], controller.signal);
+      expect(record.status).toBe("rejected");
+      expect(attempts).toBeLessThanOrEqual(2); // should not exhaust all retries
+    }, 10_000);
+
+    it("aborts before the first batch starts if signal is already aborted", async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const batcher = new TransactionBatcher<string>({ maxConcurrency: 3, batchSize: 2, retryInterval: 10 });
+      const tasks: TransactionTask<string>[] = Array.from({ length: 6 }, () => resolveAfter("x"));
+      const records = await batcher.run(tasks, controller.signal);
+      expect(records.every((r) => r.status === "rejected")).toBe(true);
+    });
+  });
 });

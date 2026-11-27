@@ -10,6 +10,7 @@ import {
   validateWasmPath,
   verifyWasmChunkIntegrity,
   processWasm,
+  WasmPipeline,
   WasmPipelineConfig,
   WasmChunkRecord,
 } from "../src/wasmPipeline.js";
@@ -199,6 +200,52 @@ describe("processWasm", () => {
       expect(content.sha256).toHaveLength(64);
       expect(content.wasmMagicValid).toBe(true);
       expect(content.integrityVerified).toBe(true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WasmPipeline class (OO interface + validate() method)
+// ---------------------------------------------------------------------------
+
+describe("WasmPipeline class", () => {
+  it("process() delegates to processWasm and returns a manifest", async () => {
+    await createFakeWasm("pipeline-test.wasm", 512);
+    const pipeline = new WasmPipeline({ sandboxDir: SANDBOX, outputDir: OUTPUT });
+    const manifest = await pipeline.process("pipeline-test.wasm");
+    expect(manifest.fileName).toBe("pipeline-test.wasm");
+    expect(manifest.totalBytes).toBe(512);
+    expect(manifest.wasmMagicValid).toBe(true);
+  });
+
+  describe("validate()", () => {
+    it("passes for a valid WASM binary", async () => {
+      await createFakeWasm("validate-valid.wasm", 256);
+      const pipeline = new WasmPipeline({ sandboxDir: SANDBOX });
+      await expect(pipeline.validate("validate-valid.wasm")).resolves.toBeUndefined();
+    });
+
+    it("throws for a non-WASM binary", async () => {
+      await createNonWasm("validate-invalid.wasm");
+      const pipeline = new WasmPipeline({ sandboxDir: SANDBOX });
+      await expect(pipeline.validate("validate-invalid.wasm")).rejects.toThrow(/magic bytes/i);
+    });
+
+    it("throws for a file that is too small to hold magic bytes", async () => {
+      const tinyPath = join(SANDBOX, "tiny.wasm");
+      await writeFile(tinyPath, Buffer.from([0x00, 0x61])); // only 2 bytes
+      const pipeline = new WasmPipeline({ sandboxDir: SANDBOX });
+      await expect(pipeline.validate("tiny.wasm")).rejects.toThrow(/too small/i);
+    });
+
+    it("throws for a directory traversal path", async () => {
+      const pipeline = new WasmPipeline({ sandboxDir: SANDBOX });
+      await expect(pipeline.validate("../etc/passwd")).rejects.toThrow(/traversal/i);
+    });
+
+    it("throws for a non-existent file", async () => {
+      const pipeline = new WasmPipeline({ sandboxDir: SANDBOX });
+      await expect(pipeline.validate("does-not-exist.wasm")).rejects.toThrow(/not found/i);
     });
   });
 });

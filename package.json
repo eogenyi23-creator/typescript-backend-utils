@@ -17,7 +17,11 @@
   "scripts": {
     "build": "tsc",
     "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:integration": "jest --testPathPattern=tests/integration",
     "lint": "tsc --noEmit",
+    "check:examples": "tsc --project tsconfig.examples.json",
+    "check:readme-examples": "node scripts/check-readme-examples.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
