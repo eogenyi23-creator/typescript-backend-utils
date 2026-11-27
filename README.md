@@ -4,6 +4,12 @@
 
 [![CI](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml/badge.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/LICENSE) [![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://developers.stellar.org/docs/smart-contracts)
 
+## Names
+
+- **GitHub repository:** `typescript-backend-utils` (the repo name is kept to avoid breaking existing URLs)
+- **npm package:** `soroban-ts-sdk` — not yet confirmed as published on npm (checked 2026-11-27: `npm view soroban-ts-sdk` returned 404)
+- **TypeScript import:** `import { ... } from 'soroban-ts-sdk'`
+
 ## Why this exists
 
 Every backend talking to Stellar/Soroban eventually hits the same five problems, usually in this order:
@@ -20,22 +26,29 @@ Most teams solve each of these individually, inside their own app — which mean
 
 ## What is typescript-backend-utils?
 
-Building on Stellar means wiring together RPC calls, Soroban contract reads, Horizon event streams, and WASM deployments. The plumbing is repetitive — this SDK packages it into well-tested, composable TypeScript modules so you can focus on your contract logic.
+Building on Stellar means wiring together RPC calls, Soroban contract reads, Horizon event streams, and WASM deployments. The plumbing is repetitive — this SDK packages it into tested TypeScript modules so you can focus on your contract logic.
 
 | Module | Description |
 | --- | --- |
 | [`contractCache`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/contractCache.ts) | Two-tier LRU + Redis cache for Soroban contract state reads |
 | [`rpcRateLimiter`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/rpcRateLimiter.ts) | Token-bucket rate limiter for Stellar RPC / Horizon API calls |
 | [`transactionBatcher`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/transactionBatcher.ts) | Concurrent Soroban transaction submission with exponential backoff |
-| [`horizonEventHandler`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/horizonEventHandler.ts) | Secure, idempotent handler for Horizon streaming events |
+| [`horizonEventHandler`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/horizonEventHandler.ts) | HMAC-verified handler for relay-delivered Horizon event callbacks |
 | [`wasmPipeline`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/wasmPipeline.ts) | Streaming WASM validation and hash pipeline for Soroban contract uploads |
 
 ## Installation
 
+The package `soroban-ts-sdk` is **not confirmed as published** on the npm registry (checked 2026-11-27: `npm view soroban-ts-sdk` returns 404). Install directly from GitHub:
+
 ```bash
-npm install soroban-ts-sdk
-# or
-pnpm add soroban-ts-sdk
+npm install github:eogenyi23-creator/typescript-backend-utils
+```
+
+If the package is published to npm in the future, the install command will be:
+
+```bash
+# once published:
+# npm install soroban-ts-sdk
 ```
 
 **Peer dependencies** (install separately based on what you use):
@@ -43,6 +56,10 @@ pnpm add soroban-ts-sdk
 ```bash
 npm install @stellar/stellar-sdk ioredis
 ```
+
+**SDK version:** tested with `@stellar/stellar-sdk@13.1.0`. The declared peer dependency range is `>=12.0.0`; older and newer versions are untested.
+
+**Node.js:** tested on Node 20.x and 22.x (the CI matrix). Node 20+ is required; other versions are untested.
 
 ## Quick Start
 
@@ -135,7 +152,11 @@ rejected.forEach((r) => {
 
 ### Horizon Event Handler
 
-Process Stellar Horizon payment, ledger, and contract events with idempotency:
+Verify and deduplicate HMAC-signed HTTP callbacks that deliver Horizon event data.
+The handler checks the `x-stellar-signature` header (HMAC-SHA256), rejects payloads
+older than `maxAgeSeconds` (default 300 s), and deduplicates by event ID.
+Horizon itself does not send webhooks; this handler is for use with a relay service
+that you operate or choose:
 
 <!-- example: horizon-event-handler -->
 ```typescript
@@ -178,7 +199,7 @@ typescript-backend-utils/
 │   ├── contractCache.ts        # Soroban contract state LRU+Redis cache
 │   ├── rpcRateLimiter.ts       # Token-bucket rate limiter for RPC/Horizon
 │   ├── transactionBatcher.ts   # Concurrent transaction submission + retry
-│   ├── horizonEventHandler.ts  # Horizon streaming event handler
+│   ├── horizonEventHandler.ts  # HMAC-verified Horizon event callback handler
 │   ├── wasmPipeline.ts         # WASM streaming hash + validation pipeline
 │   └── index.ts                # Barrel export
 ├── examples/
@@ -192,9 +213,13 @@ typescript-backend-utils/
 │   ├── rpcRateLimiter.test.ts
 │   ├── transactionBatcher.test.ts
 │   ├── horizonEventHandler.test.ts
-│   └── wasmPipeline.test.ts
+│   ├── wasmPipeline.test.ts
+│   └── integration/
+│       └── redis.test.ts       # Requires REDIS_URL; skipped otherwise
+├── docs/
+│   └── claims-audit.md         # Factual claims mapped to code and tests
 ├── .github/workflows/
-│   └── ci.yml                  # Build + test on every push/PR
+│   └── ci.yml                  # Build, test, and integration test on every push/PR
 ├── package.json
 ├── tsconfig.json
 ├── tsconfig.examples.json
@@ -206,9 +231,9 @@ typescript-backend-utils/
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 20 or 22 (the CI-tested versions)
 - npm / pnpm / yarn
-- (Optional) Redis for rate limiter and cache tests
+- Redis (optional — only needed for the integration tests)
 
 ### Setup
 
@@ -227,13 +252,26 @@ npm run build
 ### Test
 
 ```bash
+# Unit tests (no Redis required):
 npm test
+
+# With coverage:
+npm run test:coverage
+
+# Integration tests (requires Redis):
+REDIS_URL=redis://localhost:6379 npm run test:integration
 ```
 
 ### Type-check examples
 
 ```bash
 npm run check:examples
+```
+
+### Check README examples match example files
+
+```bash
+npm run check:readme-examples
 ```
 
 ### Lint

@@ -9,6 +9,214 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — docs/honest-docs-and-claims (Task 5: SECURITY.md and CONTRIBUTING)
+
+#### Changes
+- **SECURITY.md**: Fully rewritten.
+  - Vulnerability reporting now points to a GitHub private security advisory link
+    instead of a vague "email the maintainer" instruction.
+  - Added plain "Not audited" section.
+  - Added "What is and is not verified" section pointing to `docs/claims-audit.md`.
+  - `horizonEventHandler` section rewritten to match the accurate description from
+    Task 3: names the two accepted signature headers, states the 300 s / 60 s rules,
+    clarifies Horizon does not send webhooks.
+  - `wasmPipeline` section now links to the live-evidence row for the network hash claim.
+  - Removed informal phrasing; kept all substantive module notes.
+- **CONTRIBUTING.md**: Was rewritten in Task 2. Verified it contains all required
+  scripts: `check:examples`, `check:readme-examples`, `check:claims`, and the Redis
+  integration test command (`REDIS_URL=redis://localhost:6379 npm run test:integration`).
+  No "production-ready" language. Node version is "20 or 22".
+
+#### Why
+- The old reporting instruction said "email the maintainer directly" with no address —
+  useless to anyone who finds the file. A GitHub advisory link is concrete.
+- The `horizonEventHandler` SECURITY.md section still had the old inaccurate description
+  after Task 3 updated the other files.
+- The "Not audited" statement was at the bottom of the file; moving it near the top
+  makes it easier to find.
+
+#### Verification
+```
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 128 passed
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims → 46 rows validated. test-backed: 45  code-only: 1 ✓
+```
+
+#### Limits
+The GitHub advisory link targets the actual repo. Its availability was not verified
+in this environment.
+
+---
+
+### 2026-11-27 — docs/honest-docs-and-claims (Task 4: Claims audit)
+
+#### Changes
+- Created `docs/claims-audit.md` with 46 rows in the main claim table and 6 rows in
+  the live-evidence table.
+  - 45 rows: `test-backed` (each names a real test file and test title)
+  - 1 row: `code-only` (Redis Cluster Lua atomicity note in SECURITY.md — cannot be
+    unit-tested without a Cluster setup)
+  - 0 rows: `not verified`
+- Added 6 `RedisIdempotencyStore` unit tests to `tests/horizonEventHandler.test.ts`
+  (using a minimal mock Redis), promoting claim #35 from `code-only` to `test-backed`.
+  Tests cover: `hasAndMark` returns false on first call, returns true on duplicate,
+  `has()` before and after `mark()`, NX semantics (no overwrite), custom key prefix.
+- Created `scripts/check-claims.mjs`: reads the claim table, validates each
+  `test-backed` row's named file exists in `tests/` and the leaf test title appears
+  in that file, reports counts by status. Exits non-zero on any failure.
+- Added `check:claims` npm script.
+- Added `check:claims` step to the `build-and-test` CI job after `check:readme-examples`.
+
+#### Why
+Surfaced the gap in `RedisIdempotencyStore` test coverage (SET NX EX behaviour). The
+audit document gives a single place to track what is and isn't verified so the state
+is honest to both contributors and consumers.
+
+#### Verification
+```
+node scripts/check-claims.mjs →
+  check-claims: 46 rows validated.
+  test-backed: 45  code-only: 1  not-verified: 0 ✓
+
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 128 passed (122 + 6 new)
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims → 46 rows validated. test-backed: 45  code-only: 1 ✓
+```
+
+#### Limits
+- Claim #46 (Redis Cluster Lua atomicity): `code-only`. Testing would require a real
+  Redis Cluster; see SECURITY.md note.
+- Live-evidence table: all 6 rows marked `not yet run`; a later part will fill these.
+
+---
+
+### 2026-11-27 — docs/honest-docs-and-claims (Task 3: Fix the Horizon handler description)
+
+#### Changes
+- **README** `### Horizon Event Handler` section: replaced the former description
+  ("Process Stellar Horizon payment, ledger, and contract events with idempotency")
+  with an accurate description of what the handler actually does: verifies HMAC-SHA256
+  in `x-stellar-signature`, rejects payloads outside the replay window, deduplicates
+  by event ID, and explicitly notes that Horizon does not send webhooks.
+- **src/horizonEventHandler.ts** module header (started in Task 2): reflects the same
+  accurate framing — relay service, `x-stellar-signature` / `x-signature-sha256` header
+  names, 300 s default window, 60 s future clock-skew guard. No third-party service
+  names cited as integrations.
+- **SECURITY.md** `horizonEventHandler` section: rewritten to match the code — names
+  the two accepted signature headers, states the 300 s / 60 s timestamp rules, clarifies
+  that Horizon does not send webhooks, and notes the relay contract.
+
+#### Why
+The old description implied Horizon itself sends webhook callbacks ("Horizon streaming
+events", "Horizon webhook callbacks via third-party services"). Horizon uses SSE; the
+handler is for HMAC-signed HTTP callbacks from a relay that you operate. The description
+was wrong in the README, module header, and SECURITY.md.
+
+#### Verification
+```
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 122 passed
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+```
+Signature header names verified in source: `src/horizonEventHandler.ts` line ~300:
+  `req.headers["x-stellar-signature"] ?? req.headers["x-signature-sha256"]`
+Default `maxAgeSeconds`: 300 s (`config.maxAgeSeconds ?? 300`)
+Future-timestamp guard: 60 s (`age < -60`)
+
+#### Limits
+No code behaviour was changed. The examples use `process.env['HORIZON_WEBHOOK_SECRET']`
+as the secret; the name of that env var is a placeholder, not a protocol requirement.
+
+---
+
+### 2026-11-27 — docs/honest-docs-and-claims (Task 2: Remove overclaims and fix naming)
+
+#### Changes
+- **README**: Added a "Names" section at the top (GitHub repo vs npm package vs import).
+- **README**: Install section rewritten — `soroban-ts-sdk` is not on npm (confirmed
+  404 from `npm view soroban-ts-sdk`; checked 2026-11-27). Instructions now show
+  GitHub install; a commented-out `npm install soroban-ts-sdk` line is included for
+  when it is eventually published.
+- **README**: Added SDK version note: tested with `@stellar/stellar-sdk@13.1.0`;
+  peer dependency range `>=12.0.0`; older and newer versions untested.
+- **README**: Node version note: tested on Node 20.x and 22.x; Node 20+ required.
+- **README**: Removed "well-tested, composable" from the description paragraph;
+  replaced with "tested TypeScript modules".
+- **README**: `horizonEventHandler` table description changed from "Secure, idempotent
+  handler for Horizon streaming events" to "HMAC-verified handler for relay-delivered
+  Horizon event callbacks" (Task 3 work starts here; full rewrite in Task 3).
+- **README**: Development section expanded with integration test command.
+- **CONTRIBUTING.md**: Rewritten — removed "production-ready" sentence; corrected
+  all npm scripts to real names; added `check:examples`, `check:readme-examples`,
+  `check:claims`; added Redis integration test command; removed incorrect claim
+  about ESLint; updated Node version to "20 or 22".
+- **src/horizonEventHandler.ts**: Module header rewritten — removed "streaming events"
+  and "webhook callbacks via third-party services"; now accurately describes what it
+  does (HMAC-signed HTTP callbacks from a relay, signature header names, timestamp
+  rules, replay window). Full Task 3 rewrite in Task 3.
+
+#### Why
+- npm 404 makes the `npm install soroban-ts-sdk` instruction wrong for any reader.
+- "well-tested, composable" are not measurable claims tied to anything in the code.
+- "streaming events" and "webhook callbacks" misrepresent how Horizon and the handler
+  actually work.
+- Node and SDK version claims were vague; pinning to what CI tests is accurate.
+
+#### Verification
+```
+npm view soroban-ts-sdk → npm error 404 Not Found
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 122 passed
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+```
+
+#### Limits
+- Full Horizon handler description rewrite deferred to Task 3.
+- SECURITY.md naming and description updates deferred to Task 5.
+- npm publish status: 404 as of 2026-11-27; not verified on alternative registries.
+
+---
+
+### 2026-11-27 — docs/honest-docs-and-claims (Task 1: One changelog)
+
+#### Changes
+- Merged the factual history from `EMMY_CHANGELOG.md` into `CHANGELOG.md` under a
+  new section `## Development history (merged from a former second changelog)`.
+  Three dated entries (2026-09-19) preserved with their technical content; wording
+  about an external review program and resubmission audit removed.
+- Deleted `EMMY_CHANGELOG.md` with `git rm`.
+- No other files reference `EMMY_CHANGELOG.md` (confirmed by `grep -rn EMMY_CHANGELOG`).
+- Verified the `[0.1.0]` link at the bottom of `CHANGELOG.md` is well-formed
+  (`https://github.com/eogenyi23-creator/typescript-backend-utils/releases/tag/v0.1.0`).
+
+#### Why
+Two changelogs create conflicting records. The second file contained wording tied to
+an external process that is not part of the codebase's history.
+
+#### Verification
+```
+git rm EMMY_CHANGELOG.md  → rm 'EMMY_CHANGELOG.md'
+grep -rn EMMY_CHANGELOG . (excluding node_modules) → no results
+[0.1.0] link: https://github.com/eogenyi23-creator/typescript-backend-utils/releases/tag/v0.1.0
+  — well-formed URL, no trailing /** fragment
+```
+
+#### Limits
+The [0.1.0] link points to a release tag; the tag's existence on GitHub is not
+verified in this environment.
+
+---
+
 ### 2026-11-27 — fix/verify-and-readme (Task 4: Test against real Redis in CI)
 
 #### Changes
@@ -245,6 +453,58 @@ No failures at baseline. All 99 tests pass on Node v24.22.2.
 - Mock Redis, mock Soroban RPC responses, tmp-directory WASM fixtures
 - LRU eviction, ledger expiry mid-session, stampede prevention,
   Redis degradation, HMAC timing safety, path traversal, abort signal handling
+
+---
+
+## Development history (merged from a former second changelog)
+
+The entries below were originally recorded in a separate file. They are reproduced
+here with their original dates; wording about external review programs has been
+removed, and only the factual technical content is kept.
+
+---
+
+### 2026-09-19 — Scope audit
+
+**Finding:** All five modules address Stellar/Soroban-specific problems:
+
+- `contractCache`: handles Soroban's `liveUntilLedgerSeq` TTL model, persistent vs
+  temporary expiry, and `RestoreFootprintOperation` signalling.
+- `rpcRateLimiter`: per-endpoint, per-IP token-bucket limiting with Redis for Stellar
+  RPC and Horizon rate limits.
+- `transactionBatcher`: individual Soroban transaction submission with backoff for
+  `txInsufficientFee` errors.
+- `horizonEventHandler`: HMAC verification and replay protection for HMAC-signed HTTP
+  callbacks that deliver Horizon event data.
+- `wasmPipeline`: SHA-256 hash and magic-byte validation before `stellar contract install`.
+
+The repo name `typescript-backend-utils` is kept as-is to avoid breaking existing URLs;
+the npm package is named `soroban-ts-sdk` and documentation foregrounds the Soroban focus.
+
+---
+
+### 2026-09-19 — Branch: feat/changelog
+
+**What changed:** Added `CHANGELOG.md` following Keep a Changelog format; documents
+all features shipped in v0.1.0 for all five modules; creates `[Unreleased]` section.
+
+**Why:** The package was missing a changelog.
+
+---
+
+### 2026-09-19 — Branches: fix/ci-run-tests, feat/publish-workflow, feat/v0.1.0-tag
+
+**What changed:**
+- `fix/ci-run-tests`: added `cache: "npm"` to the CI `setup-node` step.
+- `feat/publish-workflow`: added `.github/workflows/publish.yml` — triggers on `v*.*.*`
+  tags, installs, builds, then publishes to npm using `NPM_TOKEN` secret.
+- `feat/v0.1.0-tag`: fixed broken `[0.1.0]` link in `CHANGELOG.md` (had a trailing
+  `/**` making it an invalid URL).
+
+**Why:** CI was missing npm caching. The publish workflow enables automated releases.
+The CHANGELOG link was malformed.
+
+---
 
 [Unreleased]: https://github.com/eogenyi23-creator/typescript-backend-utils/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/eogenyi23-creator/typescript-backend-utils/releases/tag/v0.1.0

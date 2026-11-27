@@ -1,25 +1,28 @@
 /**
- * Stellar Horizon Event Handler
+ * Horizon Event Callback Handler
  *
- * Secure, idempotent handler for Stellar Horizon streaming events —
- * payments, account activity, ledger entries, and Soroban contract events.
+ * Verifies, deduplicates, and queues HMAC-signed HTTP callbacks that deliver
+ * Stellar Horizon event data. Horizon itself exposes SSE streams and has no
+ * built-in webhook mechanism; this handler is for use with a relay service
+ * (one you operate or choose) that forwards Horizon events as signed HTTP POST
+ * requests to your backend.
  *
- * Stellar context:
- * - Horizon exposes SSE (Server-Sent Events) streams for real-time data.
- * - Many dApps and indexers receive Horizon webhook callbacks via third-party
- *   services (e.g. Stellar Expert, Meridian, or custom relayers).
- * - This handler provides HMAC-SHA256 signature verification, replay attack
- *   prevention, and idempotency so you can safely process Horizon events
- *   in your backend without duplicate processing or spoofed payloads.
+ * What the handler checks on every inbound request:
+ * - HMAC-SHA256 signature in the `x-stellar-signature` header (constant-time
+ *   comparison via `crypto.timingSafeEqual`; also accepts `x-signature-sha256`)
+ * - JSON body validity and required payload fields (`id`, `timestamp`, `type`, `data`)
+ * - Payload age: rejects events older than `maxAgeSeconds` (default 300 s) and
+ *   events more than 60 s in the future (clock-skew guard)
+ * - Event ID idempotency: in-memory (`HorizonIdempotencyStore`) or Redis-backed
+ *   (`RedisIdempotencyStore`) deduplication
  *
  * Features:
  * - Constant-time HMAC-SHA256 signature verification
- * - Replay attack prevention (configurable timestamp window)
- * - Raw body capture for accurate signature matching
- * - In-memory idempotency store (swap for RedisIdempotencyStore in production)
- * - Redis-backed idempotency store for multi-instance / restart-safe deduplication
- * - Immediate 202 Accepted + async queue offload
- * - Typed Stellar event payload (payment, account, contract, ledger)
+ * - Configurable replay window (default 300 s)
+ * - In-memory idempotency store for single-instance deployments
+ * - Redis-backed idempotency store using `SET NX EX` for multi-instance use
+ * - Returns 202 Accepted immediately; fires `onEvent` callback asynchronously
+ * - Typed Stellar event payload (`payment`, `account_credited`, `contract_event`, etc.)
  */
 
 import { createHmac, timingSafeEqual } from "crypto";
@@ -52,7 +55,7 @@ export interface HorizonEventPayload {
 }
 
 export interface HorizonEventHandlerConfig {
-  /** HMAC-SHA256 secret shared with the webhook relay */
+  /** HMAC-SHA256 secret shared with the relay service */
   secret: string;
   /** Maximum age of an event in seconds before it is rejected (default: 300) */
   maxAgeSeconds?: number;

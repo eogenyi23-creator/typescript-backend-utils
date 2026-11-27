@@ -8,6 +8,7 @@ import {
   verifyHorizonSignature,
   validateHorizonPayload,
   HorizonIdempotencyStore,
+  RedisIdempotencyStore,
   HorizonEventHandler,
   HorizonEventQueue,
   HorizonEventPayload,
@@ -316,5 +317,80 @@ describe("createHorizonEventHandler", () => {
       expect(res.statusCode).toBe(202);
       expect(result.accepted).toBe(true);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RedisIdempotencyStore — mock Redis unit tests
+// ---------------------------------------------------------------------------
+
+describe("RedisIdempotencyStore", () => {
+  // Minimal mock Redis that supports set() with NX / EX and exists()
+  function makeMockRedis() {
+    const store = new Map<string, string>();
+    return {
+      async set(
+        key: string,
+        value: string,
+        ex: "EX",
+        _ttl: number,
+        nx: "NX"
+      ): Promise<string | null> {
+        void ex; void nx;
+        if (store.has(key)) return null; // NX: key already exists
+        store.set(key, value);
+        return "OK";
+      },
+      async exists(key: string): Promise<number> {
+        return store.has(key) ? 1 : 0;
+      },
+      store,
+    };
+  }
+
+  it("hasAndMark returns false (not duplicate) on first call and stores the key", async () => {
+    const redis = makeMockRedis();
+    const idempotency = new RedisIdempotencyStore(redis as never);
+    const isDuplicate = await idempotency.hasAndMark("evt-redis-1", 1000);
+    expect(isDuplicate).toBe(false);
+    // Key should now exist in the store
+    expect(redis.store.has("horizon:idempotency:evt-redis-1")).toBe(true);
+  });
+
+  it("hasAndMark returns true (duplicate) when key already exists", async () => {
+    const redis = makeMockRedis();
+    const idempotency = new RedisIdempotencyStore(redis as never);
+    await idempotency.hasAndMark("evt-redis-2", 1000);
+    const isDuplicate = await idempotency.hasAndMark("evt-redis-2", 1000);
+    expect(isDuplicate).toBe(true);
+  });
+
+  it("has() returns false for unseen event", async () => {
+    const redis = makeMockRedis();
+    const idempotency = new RedisIdempotencyStore(redis as never);
+    expect(await idempotency.has("evt-redis-unseen")).toBe(false);
+  });
+
+  it("has() returns true after mark()", async () => {
+    const redis = makeMockRedis();
+    const idempotency = new RedisIdempotencyStore(redis as never);
+    await idempotency.mark("evt-redis-3", 1000);
+    expect(await idempotency.has("evt-redis-3")).toBe(true);
+  });
+
+  it("uses SET NX EX — second hasAndMark does not overwrite first value", async () => {
+    const redis = makeMockRedis();
+    const idempotency = new RedisIdempotencyStore(redis as never);
+    await idempotency.hasAndMark("evt-redis-4", 1000);
+    // A second call with a different timestamp should not change the stored value
+    await idempotency.hasAndMark("evt-redis-4", 9999);
+    expect(redis.store.get("horizon:idempotency:evt-redis-4")).toBe("1000");
+  });
+
+  it("respects custom keyPrefix", async () => {
+    const redis = makeMockRedis();
+    const idempotency = new RedisIdempotencyStore(redis as never, { keyPrefix: "custom:" });
+    await idempotency.hasAndMark("evt-5", 1000);
+    expect(redis.store.has("custom:evt-5")).toBe(true);
   });
 });
