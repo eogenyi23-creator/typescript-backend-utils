@@ -10,10 +10,15 @@
  *   npm run testnet
  *   REDIS_URL=redis://localhost:6379 npm run testnet
  *
+ * Offline preflight (checks all CLI flags without network):
+ *   npm run testnet:preflight
+ *
  * See docs/testnet.md for full prerequisites and expected output.
  *
  * Keys: throwaway keypairs are generated fresh on every run, funded through
- * Friendbot, held in memory only, and never written to disk or printed.
+ * Friendbot, and removed from the stellar CLI's key store in a finally block.
+ * Key names start with `harness-`.  If a run is killed before cleanup, list
+ * leftovers with `stellar keys ls` and remove them with `stellar keys rm --force <name>`.
  */
 
 import { randomBytes } from "node:crypto";
@@ -44,9 +49,20 @@ const LAST_RUN_PATH = resolve(__dirname, "last-run.txt");
 // Import compiled helpers (built from testnet/helpers.ts via `npm run build:testnet`)
 // ---------------------------------------------------------------------------
 
-const { isTerminalStatus, checkForbiddenContractId } = await import(
-  join(REPO_ROOT, "dist-testnet/helpers.js")
-);
+const {
+  isTerminalStatus,
+  checkForbiddenContractId,
+  argsKeysGenerate,
+  argsKeysAddress,
+  argsKeysRm,
+  argsContractBuild,
+  argsContractUpload,
+  argsContractDeploy,
+  argsContractInvoke,
+  parseTransactionHash,
+  getPreflightSpecs,
+  checkPreflightFlags,
+} = await import(join(REPO_ROOT, "dist-testnet/helpers.js"));
 
 // ---------------------------------------------------------------------------
 // Network constants
@@ -55,6 +71,7 @@ const { isTerminalStatus, checkForbiddenContractId } = await import(
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 const RPC_URL = "https://soroban-testnet.stellar.org";
 const FRIENDBOT_URL = "https://friendbot.stellar.org";
+const NETWORK = "testnet";
 
 // ---------------------------------------------------------------------------
 // Output collection
@@ -187,7 +204,11 @@ function sleep(ms) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers: stellar CLI wrappers
+// stellar CLI wrappers
+//
+// One small function per subcommand.  Each function's argument list is built
+// by the pure helper in testnet/helpers.ts so the preflight checker and unit
+// tests can inspect the exact flags used.
 // ---------------------------------------------------------------------------
 
 async function stellarExec(args, opts = {}) {
@@ -200,30 +221,157 @@ async function stellarExec(args, opts = {}) {
   return { stdout: (stdout ?? "").trim(), stderr: (stderr ?? "").trim() };
 }
 
+/** `stellar keys generate <name>` — does NOT auto-fund; harness uses Friendbot. */
+async function stellarKeysGenerate(keyName) {
+  await stellarExec(argsKeysGenerate(keyName));
+}
+
+/**
+ * `stellar keys public-key <name>` — returns the G... public key.
+ *
+ * `keys address` is a documented alias; we use the canonical name.
+ */
+async function stellarKeysAddress(keyName) {
+  const { stdout } = await stellarExec(argsKeysAddress(keyName));
+  return stdout.trim();
+}
+
+/** `stellar keys rm --force <name>` — removes without an interactive prompt. */
+async function stellarKeysRm(keyName) {
+  await stellarExec(argsKeysRm(keyName));
+}
+
+/** `stellar contract build` (run inside the contract directory). */
+async function stellarContractBuild() {
+  return stellarExec(argsContractBuild(), { cwd: CONTRACT_DIR, timeout: 300000 });
+}
+
+/**
+ * `stellar contract upload --wasm <path> --source <key> --network <net>`
+ *
+ * Returns the WASM hash printed on stdout (last non-empty line).
+ * Note: `contract install` is deprecated in 30.0.1; `contract upload` is current.
+ */
+async function stellarContractUpload(wasmPath, sourceKey) {
+  const { stdout } = await stellarExec(argsContractUpload(wasmPath, sourceKey, NETWORK));
+  return stdout.trim().split("\n").pop().trim();
+}
+
+/**
+ * `stellar contract deploy --wasm-hash <hash> --source <key> --network <net>`
+ *
+ * Returns the contract ID printed on stdout (last non-empty line).
+ */
+async function stellarContractDeploy(wasmHash, sourceKey) {
+  const { stdout } = await stellarExec(argsContractDeploy(wasmHash, sourceKey, NETWORK));
+  return stdout.trim().split("\n").pop().trim();
+}
+
+/**
+ * `stellar contract invoke --id <id> --source <key> --network <net> -- <fn> [args...]`
+ *
+ * Returns stdout (contract return value) and stderr (CLI diagnostic output).
+ *
+ * Transaction hash: stellar CLI 30.0.1 does not expose the transaction hash
+ * through any documented flag (`-v`/`--verbose` logs DEBUG events only;
+ * `--very-verbose` adds TRACE — neither documents a hash in its output).
+ * Hash extraction is therefore not attempted; callers that need a hash must
+ * note it is unavailable.
+ */
+async function stellarContractInvoke(contractId, sourceKey, fnName, fnArgs) {
+  const { stdout, stderr } = await stellarExec(
+    argsContractInvoke(contractId, sourceKey, NETWORK, fnName, fnArgs)
+  );
+  return { stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
+// ---------------------------------------------------------------------------
+// Preflight mode
+//
+// Runs every subcommand's --help and verifies that each flag the harness uses
+// appears in the help text.  Works fully offline.  Exits non-zero and prints
+// a clear list if anything is missing.
+// ---------------------------------------------------------------------------
+
+async function runPreflight() {
+  log("═".repeat(62));
+  log("  soroban-ts-sdk testnet harness — preflight check");
+  log("═".repeat(62));
+  log(`  stellar CLI: ${stellar30Version()}`);
+  log("");
+
+  const specs = getPreflightSpecs();
+  const failures = [];
+
+  for (const spec of specs) {
+    const subCmd = spec.subcommand.join(" ");
+    let helpText = "";
+    try {
+      const { stdout, stderr } = await execFileP(
+        "stellar",
+        [...spec.subcommand, "--help"],
+        { timeout: 10000 }
+      );
+      helpText = stdout + "\n" + stderr;
+    } catch (err) {
+      failures.push({ subCmd, missing: ["(--help failed: " + err.message + ")"] });
+      continue;
+    }
+
+    const missing = checkPreflightFlags(helpText, spec.requiredFlags);
+    if (missing.length > 0) {
+      failures.push({ subCmd, missing });
+      log(`  ✗ stellar ${subCmd}: missing flags: ${missing.join(", ")}`);
+    } else {
+      const flagSummary = spec.requiredFlags.length
+        ? spec.requiredFlags.join(", ")
+        : "(no extra flags)";
+      log(`  ✓ stellar ${subCmd}: ${flagSummary}`);
+    }
+  }
+
+  log("");
+  if (failures.length > 0) {
+    log("PREFLIGHT FAILED — unsupported flags detected:");
+    for (const f of failures) {
+      log(`  stellar ${f.subCmd}: ${f.missing.join(", ")}`);
+    }
+    process.exit(1);
+  } else {
+    log("Preflight passed — all flags verified against installed CLI ✓");
+    process.exit(0);
+  }
+}
+
+function stellar30Version() {
+  try {
+    return execFileSync("stellar", ["--version"], { encoding: "utf8", timeout: 10000 })
+      .trim()
+      .split("\n")[0];
+  } catch {
+    return "(unknown)";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers: Keypair generation and Friendbot
 // ---------------------------------------------------------------------------
 
 /**
  * Generates a fresh throwaway keypair, registers it with the stellar CLI's
- * in-memory identity store, and funds it via Friendbot.
+ * key store, and funds it via Friendbot.
  *
- * The secret key is never printed or written to disk; it lives only in the
- * stellar CLI's ephemeral key store for the duration of the harness run.
+ * The secret key lives only in the stellar CLI's on-disk key store for the
+ * duration of the run.  The main() finally block removes every identity
+ * created this way using `stellar keys rm --force`.
  *
  * Returns { keyName, publicKey }.
  */
 async function generateAndFundKeypair(label) {
   const keyName = `harness-${label}-${randomBytes(4).toString("hex")}`;
-  // Generate key (--no-fund so we can fund via Friendbot ourselves)
-  await stellarExec([
-    "keys", "generate", "--no-fund",
-    "--network", "testnet",
-    keyName,
-  ]);
-  // Get the public address
-  const { stdout: address } = await stellarExec(["keys", "address", keyName]);
-  const publicKey = address.trim();
+  // Generate key — no --fund; the harness funds via Friendbot itself.
+  await stellarKeysGenerate(keyName);
+  const publicKey = await stellarKeysAddress(keyName);
 
   // Fund via Friendbot
   log(`  Funding ${label} (${publicKey.slice(0, 8)}…) via Friendbot…`);
@@ -261,10 +409,7 @@ function checkStellarCli() {
 async function ensureWasm() {
   if (!existsSync(WASM_PATH)) {
     log("WASM not found — building (this takes ~60 s)…");
-    const { stdout, stderr } = await stellarExec(["contract", "build"], {
-      cwd: CONTRACT_DIR,
-      timeout: 300000,
-    });
+    const { stdout, stderr } = await stellarContractBuild();
     if (stdout) log(stdout);
     if (stderr) log(stderr);
     if (!existsSync(WASM_PATH)) {
@@ -286,29 +431,18 @@ async function ensureWasm() {
 /**
  * Uploads the WASM and deploys a fresh contract instance.
  * Returns { wasmHash, contractId }.
+ *
+ * Uses `contract upload` (not the deprecated `contract install`).
  */
 async function deployContract(deployerKeyName) {
   logSection("Deploying kv-test contract");
 
   log("  Uploading WASM…");
-  const { stdout: installOut } = await stellarExec([
-    "contract", "install",
-    "--wasm", WASM_PATH,
-    "--source", deployerKeyName,
-    "--network", "testnet",
-  ]);
-  // stellar contract install prints the wasm hash on the last non-empty line
-  const wasmHash = installOut.trim().split("\n").pop().trim();
+  const wasmHash = await stellarContractUpload(WASM_PATH, deployerKeyName);
   log(`  WASM hash (from upload): ${wasmHash}`);
 
   log("  Deploying contract instance…");
-  const { stdout: deployOut } = await stellarExec([
-    "contract", "deploy",
-    "--wasm-hash", wasmHash,
-    "--source", deployerKeyName,
-    "--network", "testnet",
-  ]);
-  const contractId = deployOut.trim().split("\n").pop().trim();
+  const contractId = await stellarContractDeploy(wasmHash, deployerKeyName);
   log(`  Contract ID: ${contractId}`);
 
   return { wasmHash, contractId };
@@ -393,30 +527,17 @@ async function checkB_contractCache(contractId, deployerKeyName) {
 
   // Helper: invoke kv-test via stellar CLI
   async function kvGet(key) {
-    const { stdout } = await stellarExec([
-      "contract", "invoke",
-      "--id", contractId,
-      "--source", deployerKeyName,
-      "--network", "testnet",
-      "--",
-      "get",
-      "--key", key,
-    ]);
+    const { stdout } = await stellarContractInvoke(
+      contractId, deployerKeyName, "get", ["--key", key]
+    );
     const raw = stdout.trim().split("\n").pop().trim();
     return raw === "null" ? null : JSON.parse(raw);
   }
 
   async function kvSet(key, value) {
-    await stellarExec([
-      "contract", "invoke",
-      "--id", contractId,
-      "--source", deployerKeyName,
-      "--network", "testnet",
-      "--",
-      "set",
-      "--key", key,
-      "--value", String(value),
-    ]);
+    await stellarContractInvoke(
+      contractId, deployerKeyName, "set", ["--key", key, "--value", String(value)]
+    );
   }
 
   // The fetch function the cache calls on a miss: reads from the network
@@ -503,45 +624,28 @@ async function checkC_transactionBatcher(contractId, extraKeys) {
   /**
    * Submits a single Soroban invocation via the stellar CLI.
    *
-   * `stellar contract invoke` submits the transaction and waits for it to
-   * land on the ledger, then returns the contract's return value on stdout.
-   * To get the transaction hash we use `--verbose`, which writes the hash to
-   * stderr in the form "INFO  Transaction hash: <hash>".  If the CLI version
-   * does not emit that line we fall back to recording the CLI output only.
+   * stellar CLI 30.0.1 does not expose the transaction hash through any
+   * documented flag.  `-v` / `--verbose` logs DEBUG events; `--very-verbose`
+   * adds TRACE — neither is documented to emit a hash.  Hash-based
+   * re-confirmation is therefore marked SKIPPED rather than attempted.
    *
-   * Each task uses its own funded keypair to avoid sequence-number collisions
-   * across concurrent submissions.
+   * Each task uses its own funded keypair to avoid sequence-number collisions.
    */
   async function invokeAndConfirm(keyName, fn, fnArgs) {
-    const cliArgs = [
-      "contract", "invoke",
-      "--id", contractId,
-      "--source", keyName,
-      "--network", "testnet",
-      "--",
-      fn,
-      ...fnArgs,
-    ];
-    // CLI submits, waits for SUCCESS, and exits non-zero on failure.
-    const { stdout, stderr } = await stellarExec(cliArgs);
-
-    // Extract the transaction hash from verbose stderr output if present.
-    // This is a best-effort enhancement; the check still passes without it.
-    const hashMatch = stderr.match(/transaction hash:?\s*([0-9a-fA-F]{64})/i)
-      ?? stderr.match(/hash[: ]+([0-9a-fA-F]{64})/i);
-    const hash = hashMatch ? hashMatch[1] : null;
-
-    return { hash, output: stdout.trim() };
+    const { stdout, stderr } = await stellarContractInvoke(
+      contractId, keyName, fn, fnArgs
+    );
+    // parseTransactionHash is available but the CLI does not emit one in 30.0.1.
+    // Try anyway; callers treat null as "hash not available".
+    const hash = parseTransactionHash(stderr) ?? parseTransactionHash(stdout);
+    return { hash, output: stdout };
   }
 
   // Task factory: valid increment invocation on a unique counter per task.
-  // The increment function returns the new counter value.
   const makeValidTask = (keyName, counter) => () =>
     invokeAndConfirm(keyName, "increment", ["--key", `c_ctr${counter}`]);
 
-  // Task factory: deliberately invalid — calls a function that does not exist
-  // on the contract.  The CLI rejects this at simulation time before any
-  // transaction is submitted.
+  // Task factory: deliberately invalid — calls a function that does not exist.
   const makeInvalidTask = (keyName) => () =>
     invokeAndConfirm(keyName, "nonexistent_fn", []);
 
@@ -565,13 +669,16 @@ async function checkC_transactionBatcher(contractId, extraKeys) {
   const fulfilled = records.filter((r) => r.status === "fulfilled");
   const rejected = records.filter((r) => r.status === "rejected");
 
-  // C1: Valid tasks succeed; re-confirm any extracted tx hashes via getTransaction.
+  // C1: Valid tasks succeed.  Independent hash re-confirmation via getTransaction
+  // is SKIPPED because stellar CLI 30.0.1 does not emit a transaction hash.
   if (fulfilled.length === 2) {
+    // Attempt hash re-confirmation only if the CLI happened to emit one.
     let allConfirmed = true;
+    let anyHashFound = false;
     for (const rec of fulfilled) {
       const hash = rec.result?.hash;
       if (hash) {
-        // Re-check via raw JSON-RPC; assert on what the network reports.
+        anyHashFound = true;
         const tx = await pollTransaction(hash, 30000);
         if (tx.status === "SUCCESS") {
           log(`    re-confirmed ${hash.slice(0, 12)}… → SUCCESS`);
@@ -579,14 +686,14 @@ async function checkC_transactionBatcher(contractId, extraKeys) {
           log(`    C1 FAIL  ${hash.slice(0, 12)}… re-check returned ${tx.status}`);
           allConfirmed = false;
         }
-      } else {
-        // CLI did not output a hash in its stderr — the CLI already verified
-        // SUCCESS by waiting; the on-chain counter check (C3) is the evidence.
-        log(`    task fulfilled; CLI confirmed SUCCESS (hash not in stderr output)`);
       }
     }
-    if (allConfirmed) {
+    if (!anyHashFound) {
       log(`  C1 PASS  ${fulfilled.length} valid tasks fulfilled`);
+      log(`    (hash re-confirmation SKIPPED — stellar CLI 30.0.1 does not emit a tx hash)`);
+      results.push({ id: "C1", pass: true });
+    } else if (allConfirmed) {
+      log(`  C1 PASS  ${fulfilled.length} valid tasks fulfilled; hashes re-confirmed`);
       results.push({ id: "C1", pass: true });
     } else {
       log(`  C1 FAIL  hash re-check failed`);
@@ -608,19 +715,12 @@ async function checkC_transactionBatcher(contractId, extraKeys) {
   }
 
   // C3: On-chain counters reflect the two successful increments.
-  // This is the primary assertion against what the network reports.
   log("  Verifying on-chain increment results…");
   let onChainMatch = true;
   for (let i = 0; i < 2; i++) {
-    const { stdout } = await stellarExec([
-      "contract", "invoke",
-      "--id", contractId,
-      "--source", key0.keyName,
-      "--network", "testnet",
-      "--",
-      "get",
-      "--key", `c_ctr${i}`,
-    ]);
+    const { stdout } = await stellarContractInvoke(
+      contractId, key0.keyName, "get", ["--key", `c_ctr${i}`]
+    );
     const raw = stdout.trim().split("\n").pop().trim();
     const val = raw === "null" ? null : JSON.parse(raw);
     if (val === 1) {
@@ -698,11 +798,10 @@ async function checkD_rpcRateLimiter() {
     };
     let _status = 200;
     let _nextCalled = false;
-    let _responded = false;
     const res = {
       setHeader() {},
       status(c) { _status = c; return this; },
-      json() { _responded = true; return this; },
+      json() { return this; },
     };
     const next = () => { _nextCalled = true; };
     return { req, res, next, isAllowed: () => _nextCalled };
@@ -757,8 +856,6 @@ async function checkE_horizonEventHandler() {
   const idempotency = new HorizonIdempotencyStore();
   const handler = createHorizonEventHandler({ secret: SECRET }, idempotency);
 
-  // Helper: build a mock req/res pair and invoke the handler directly
-  // (no actual HTTP server needed; the handler is a plain async function)
   async function invoke(rawBody, headers) {
     const req = {
       headers,
@@ -953,10 +1050,37 @@ function assertNotForeignContract(contractId) {
 }
 
 // ---------------------------------------------------------------------------
+// Key cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes all harness-generated identities from the stellar CLI's key store.
+ * Called in the main() finally block so cleanup happens even on error/Ctrl-C.
+ */
+async function cleanupKeys(keyNames) {
+  if (keyNames.length === 0) return;
+  logSection("Cleaning up harness keypairs");
+  for (const name of keyNames) {
+    try {
+      await stellarKeysRm(name);
+      log(`  Removed identity: ${name} ✓`);
+    } catch (err) {
+      log(`  Warning: could not remove identity ${name}: ${err.message}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // ── Preflight mode ─────────────────────────────────────────────────────
+  if (process.argv.includes("--preflight")) {
+    await runPreflight();
+    return; // runPreflight exits; this is defensive
+  }
+
   log("═".repeat(62));
   log("  soroban-ts-sdk testnet harness");
   log("═".repeat(62));
@@ -964,58 +1088,67 @@ async function main() {
   log(`  Network: ${NETWORK_PASSPHRASE}`);
   log(`  RPC:     ${RPC_URL}`);
 
-  // ── Prerequisites ──────────────────────────────────────────────────────
-  logSection("Prerequisites");
-  checkNode();
-  checkStellarCli();
-  await ensureWasm();
+  // Track every key name created so we can clean up in finally
+  const createdKeyNames = [];
 
-  // ── Setup: generate and fund keypairs ──────────────────────────────────
-  logSection("Generating and funding keypairs");
-  log("  Generating deployer keypair…");
-  const deployer = await generateAndFundKeypair("deployer");
-  log("  Generating 3 keypairs for batcher check…");
-  const extraKeys = await Promise.all([
-    generateAndFundKeypair("batcher0"),
-    generateAndFundKeypair("batcher1"),
-    generateAndFundKeypair("batcher2"),
-  ]);
-  log("  All keypairs funded ✓");
+  try {
+    // ── Prerequisites ────────────────────────────────────────────────────
+    logSection("Prerequisites");
+    checkNode();
+    checkStellarCli();
+    await ensureWasm();
 
-  // ── Deploy ─────────────────────────────────────────────────────────────
-  const { wasmHash, contractId } = await deployContract(deployer.keyName);
-  assertNotForeignContract(contractId);
-  log(`  Contract ID safety check passed ✓`);
+    // ── Setup: generate and fund keypairs ────────────────────────────────
+    logSection("Generating and funding keypairs");
+    log("  Generating deployer keypair…");
+    const deployer = await generateAndFundKeypair("deployer");
+    createdKeyNames.push(deployer.keyName);
 
-  // ── Run checks ─────────────────────────────────────────────────────────
-  const allResults = [];
+    log("  Generating 3 keypairs for batcher check…");
+    const extraKeys = await Promise.all([
+      generateAndFundKeypair("batcher0"),
+      generateAndFundKeypair("batcher1"),
+      generateAndFundKeypair("batcher2"),
+    ]);
+    for (const k of extraKeys) createdKeyNames.push(k.keyName);
+    log("  All keypairs funded ✓");
 
-  allResults.push(...await checkA_wasmPipeline(wasmHash));
-  allResults.push(...await checkB_contractCache(contractId, deployer.keyName));
-  allResults.push(...await checkC_transactionBatcher(contractId, extraKeys));
-  allResults.push(...await checkD_rpcRateLimiter());
-  allResults.push(...await checkE_horizonEventHandler());
+    // ── Deploy ───────────────────────────────────────────────────────────
+    const { wasmHash, contractId } = await deployContract(deployer.keyName);
+    assertNotForeignContract(contractId);
+    log(`  Contract ID safety check passed ✓`);
 
-  // ── Summary ────────────────────────────────────────────────────────────
-  logSection("Summary");
-  const rows = buildSummaryTable(allResults);
-  log(formatSummaryTable(rows));
+    // ── Run checks ───────────────────────────────────────────────────────
+    const allResults = [];
 
-  const failures = allResults.filter((r) => !r.skipped && !r.pass);
-  const passes = allResults.filter((r) => !r.skipped && r.pass);
-  const skipped = allResults.filter((r) => r.skipped);
-  log(`  ${passes.length} passed   ${failures.length} failed   ${skipped.length} skipped`);
+    allResults.push(...await checkA_wasmPipeline(wasmHash));
+    allResults.push(...await checkB_contractCache(contractId, deployer.keyName));
+    allResults.push(...await checkC_transactionBatcher(contractId, extraKeys));
+    allResults.push(...await checkD_rpcRateLimiter());
+    allResults.push(...await checkE_horizonEventHandler());
 
-  // ── Write last-run.txt ─────────────────────────────────────────────────
-  writeFileSync(LAST_RUN_PATH, outputLines.join("\n") + "\n", "utf8");
-  log(`\n  Full output written to: ${LAST_RUN_PATH}`);
+    // ── Summary ──────────────────────────────────────────────────────────
+    logSection("Summary");
+    const rows = buildSummaryTable(allResults);
+    log(formatSummaryTable(rows));
 
-  if (failures.length > 0) {
-    log("\n  ✗ One or more checks FAILED — see output above.");
-    process.exit(1);
-  } else {
-    log("\n  ✓ All executed checks passed.");
-    process.exit(0);
+    const failures = allResults.filter((r) => !r.skipped && !r.pass);
+    const passes = allResults.filter((r) => !r.skipped && r.pass);
+    const skipped = allResults.filter((r) => r.skipped);
+    log(`  ${passes.length} passed   ${failures.length} failed   ${skipped.length} skipped`);
+
+    // ── Write last-run.txt ───────────────────────────────────────────────
+    writeFileSync(LAST_RUN_PATH, outputLines.join("\n") + "\n", "utf8");
+    log(`\n  Full output written to: ${LAST_RUN_PATH}`);
+
+    if (failures.length > 0) {
+      log("\n  ✗ One or more checks FAILED — see output above.");
+      process.exitCode = 1;
+    } else {
+      log("\n  ✓ All executed checks passed.");
+    }
+  } finally {
+    await cleanupKeys(createdKeyNames);
   }
 }
 
