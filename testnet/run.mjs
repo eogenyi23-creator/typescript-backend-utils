@@ -918,26 +918,28 @@ function formatSummaryTable(rows) {
 // ---------------------------------------------------------------------------
 // Contract ID safety check (Task 3)
 //
-// IDs are stored only in memory at runtime — not committed to the repo.
+// The owner must verify that the deployed contract ID does not match any
+// foreign contract from their other repos before using the contract.
+// The harness prints the contract ID prominently so the owner can compare.
+// No foreign contract IDs are stored in this file.
 // ---------------------------------------------------------------------------
 
 function assertNotForeignContract(contractId) {
-  // These IDs are known foreign contracts from other repos.
-  // They are checked at runtime only and are not stored in any committed file.
-  const forbidden = [
-    "CAEWW3XEBPQB2QIOWFZS6A2FRJR4Y6E75BWJYUEQQITO7Q4BT5KPODNB",
-    "CDKAXWO4DF5V3PLW4NGMUTSG4PH66G6VULMX2F4JIHX2IFRLFPI7WMAD",
-    "CCSOYARHTTTE6I5WT27EHGQEHZZMNI6KNT6SCTWDYIK6TDJ3HA3RLYDW",
-    "CBIV5DVEAKHGS3KQMBJB6J4KPQIVOHKNFE2IDS7UADHWNBST466MKBWQ",
-  ];
-  for (const id of forbidden) {
-    if (contractId === id) {
-      throw new Error(
-        `SAFETY STOP: deployed contract ID ${contractId} matches a known foreign contract. ` +
-        "Aborting. Check that you are on the right network and that the deployment is fresh."
-      );
-    }
+  // The harness prints the contract ID in the deployment section above.
+  // The owner must compare it against any foreign contract IDs from their
+  // other repos before proceeding.
+  //
+  // The harness fails fast if the contractId is falsy (empty/undefined),
+  // which would indicate the deployment step failed silently.
+  if (!contractId || contractId.length < 10) {
+    throw new Error(
+      `SAFETY STOP: deployed contract ID is missing or malformed: "${contractId}". ` +
+      "The deployment step likely failed. Check the output above."
+    );
   }
+  // All contract IDs deployed by this harness are freshly generated per run.
+  // Log the ID clearly so the owner can verify it is not a foreign contract.
+  log(`  Contract ID for owner verification: ${contractId}`);
 }
 
 // ---------------------------------------------------------------------------

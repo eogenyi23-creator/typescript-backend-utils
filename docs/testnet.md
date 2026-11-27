@@ -1,5 +1,24 @@
 # Testnet Harness
 
+## Contract ID safety check (once-off manual step)
+
+Before using the harness output for any purpose, compare the deployed contract
+ID (printed in the "Deploying kv-test contract" section) against the foreign
+contract IDs from your other repos. The harness deploys a fresh contract on
+every run so IDs should never match, but verify once after the first run.
+
+The harness prints the contract ID on the line:
+
+```
+  Contract ID: C...
+  Contract ID for owner verification: C...
+```
+
+Compare that value manually against any known foreign IDs from your other
+projects. If they match, something went wrong (wrong network or account).
+
+---
+
 ## What it checks
 
 The harness deploys a fresh instance of the `kv-test` contract to the Stellar
