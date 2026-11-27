@@ -9,6 +9,140 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — docs/testnet-evidence (Task 4: changelog record of the recorded testnet run)
+
+#### Changes
+- This entry. A dated record of the completed documentation work for
+  `docs/testnet-evidence` (Tasks 1–3 of this part).
+- No changes to `src/`, `testnet/run.mjs` behaviour, or tests. Documentation
+  only.
+
+#### Why
+Every task in this part needs an honest dated record of what was changed, what
+was verified, and what the limits are.
+
+#### Verification
+All commands from the task contract were run in this workspace on
+2026-11-27 after Task 3 (results in the Task 3 entry above): `npm run lint`,
+`npm run build`, `npm test -- --testPathIgnorePatterns="tests/integration"`,
+`npm run check:examples`, `npm run check:readme-examples`,
+`npm run check:claims`.
+
+#### Limits
+The recorded run remains a single run on one day (2026-11-27) with throwaway
+accounts and one minimal contract fixture (`kv-test`). The changelog records
+documentation; it does not add runtime evidence of its own.
+
+### 2026-11-27 — docs/testnet-evidence (Task 3: replace every "not yet run" claim with the real status)
+
+#### Changes
+- **`docs/claims-audit.md`** — the live-evidence table is updated with the real
+  results, the run date and time (2026-11-27 16:06:30 UTC), and the merge
+  commit (`697d469`, PR #33).  Every row is labelled by where it ran (testnet /
+  local Redis / local HTTP).  Rows L1–L5 are now PASS with evidence (contract
+  ID, WASM hash, and the two re-confirmed transaction hashes with links).
+  Row L6 is PASS against a single local Redis 7.0.15 (cluster untested).  The
+  "not yet run" wording in the live-evidence intro is replaced by the real
+  status.  `npm run check:claims` still validates the table.
+- **`docs/claims-audit.md`** — L5's check description updated to
+  `stellar contract upload` (the command actually used; `install` is the
+  deprecated form).
+- **`SECURITY.md`** — the "live-evidence table lists claims … have not yet been
+  executed" sentence replaced with the real status (table records the run date
+  and result).  The `wasmPipeline` section now states the hash match against
+  the network was verified on 2026-11-27 (WASM hash
+  `cf46518c3c6cc678788e52340431638a21d56c1c42822dc2643f1af0e4f10391`, harness
+  check A1) with a link to `docs/testnet-run.md`.
+- No "not yet run"-type wording remains outside the historical CHANGELOG
+  entries (which are never edited) and the NOT-covered/limits lists.
+- The harness header (`testnet/run.mjs`) and `README.md` contain no
+  "not yet run" statements about the harness; the README's npm-publication
+  line ("not yet confirmed as published on npm") is a separate, unchanged
+  claim.
+- **`README.md`** (Task 2) — a "Verified against Stellar testnet" section near
+  the top records: the run date, what ran, the contract ID
+  `CBKCMVFQZE7X6QA4VKAWE3IKBYUJBEBTTSGZY7BWQG3WFW52JC5UMZLQ` (with explorer
+  link), the WASM hash, both transaction links, which checks ran against the
+  testnet (A, B, C), against a local Redis (D), and locally over HTTP (E), the
+  limits, the reproduce commands, and a link to `docs/testnet-run.md`.
+
+#### Why
+The claims audit, SECURITY.md and README previously said the live run had not
+happened.  After the real run, keeping that wording would be a false claim in
+the opposite direction: the docs would understate what has been verified.
+Every row now states exactly what ran, where, when, and what it does not
+cover.
+
+#### Verification
+```
+npm run lint                     → exit 0
+npm run build                    → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration"
+  → 202 passed, 0 failed, 0 skipped
+npm run check:examples           → exit 0
+npm run check:readme-examples    → all 5 snippet(s) matched. ✓
+npm run check:claims             → 46 rows validated. ✓
+```
+
+#### Limits
+Row L4's relay-forwarded events remain untested (check E ran local HTTP
+only).  The recorded run is a single run on one day with throwaway accounts
+and one minimal contract fixture.
+
+### 2026-11-27 — docs/testnet-evidence (Task 1: record the real testnet run in docs/testnet-run.md)
+
+#### Changes
+- **`docs/testnet-run.md`** (new) — full record of the real run:
+  - Run date and time (2026-11-27 at 16:06:30 UTC), environment (GitHub
+    Codespace, Node v24.22.2, stellar CLI 30.0.1, Redis 7.0.15 on localhost,
+    `Test SDF Network ; September 2015`,
+    `https://soroban-testnet.stellar.org`, throwaway Friendbot-funded
+    accounts removed from the CLI key store afterwards).
+  - The exact commands used (`npm run testnet:preflight`, then
+    `REDIS_URL=redis://localhost:6379 npm run testnet`).
+  - The full terminal output in a code block.
+  - A table of the 18 checks (ID, module, what it asserts, result, evidence,
+    and where each ran: testnet / local Redis / local HTTP).
+  - The contract ID
+    `CBKCMVFQZE7X6QA4VKAWE3IKBYUJBEBTTSGZY7BWQG3WFW52JC5UMZLQ` with its
+    explorer link, the WASM hash
+    `cf46518c3c6cc678788e52340431638a21d56c1c42822dc2643f1af0e4f10391`, and
+    the two re-confirmed transaction hashes with links.
+  - Note that both transaction hashes were re-checked against
+    `https://soroban-testnet.stellar.org` via the RPC `getTransaction` method
+    on 2026-11-27, both returning `"status": "SUCCESS"`.
+  - The earlier-runs paragraph (the `--no-fund` CLI failure, the 12:29 UTC
+    run with the fail-open rate-limiter, and the review findings — all fixed
+    and merged before the recorded run).
+  - "What this proves / does not prove" from the NOT-covered list, including
+    the synthetic mock IP note (`10.1.23228.152` is not a real address).
+- No changes to `src/`, `testnet/run.mjs` behaviour, or tests.
+
+#### Why
+The run happened; the repo must record it exactly, with the real IDs, hashes
+and links, and with the limits stated plainly so nothing unverified is
+implied.
+
+#### Verification
+```
+npm run lint                     → exit 0
+npm run build                    → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration"
+  → 202 passed, 0 failed, 0 skipped
+npm run check:examples           → exit 0
+npm run check:readme-examples    → all 5 snippet(s) matched. ✓
+npm run check:claims             → 46 rows validated. ✓
+```
+Both transaction hashes (`17c8939d8f1d29755692d225ac2fe3f97386260105625fe67864b22386831f29`,
+`8a6b1743625d622cb681628eafe1239c4ad7b0f4515b3dbe6d656dba8f0fb95f`) were
+re-checked via `getTransaction` on
+`https://soroban-testnet.stellar.org`: both returned `"status": "SUCCESS"`.
+
+#### Limits
+The record documents a single run on one day (2026-11-27) with throwaway
+accounts and one minimal contract fixture (`kv-test`).  The contract was
+live at run time; its TTL and long-term state are not tracked by this record.
+
 ### 2026-11-27 — fix/harness-check-d (Task 1: rewrite check D so it cannot pass by failing open)
 
 #### Changes
