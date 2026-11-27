@@ -1,5 +1,27 @@
 # Testnet Harness
 
+## Contract ID safety check
+
+The harness deploys a fresh contract on every run so IDs should never match a
+foreign project, but you can verify automatically.  Set the
+`FORBIDDEN_CONTRACT_IDS` environment variable to a comma-separated list of
+contract IDs from your other projects before running:
+
+```sh
+FORBIDDEN_CONTRACT_IDS=C...,C... npm run testnet
+```
+
+If the freshly-deployed contract ID matches any entry the harness stops with a
+`SAFETY STOP` error.  If the variable is not set, the harness prints:
+
+```
+  Contract-ID safety check: not configured (set FORBIDDEN_CONTRACT_IDS to enable)
+```
+
+No real contract IDs from any other project are stored in this repo.
+
+---
+
 ## What it checks
 
 The harness deploys a fresh instance of the `kv-test` contract to the Stellar
@@ -53,6 +75,12 @@ pair. No testnet connection is made for check E.
 
 - **REDIS_URL** environment variable — if set, check D runs against that Redis
   instance. If not set, check D is skipped.
+- **FORBIDDEN_CONTRACT_IDS** environment variable — comma-separated list of
+  contract IDs that belong to other projects of the operator.  If set and the
+  freshly-deployed contract ID matches any entry, the harness stops immediately
+  with a `SAFETY STOP` error.  If not set, the check is skipped with a notice.
+  Example: `FORBIDDEN_CONTRACT_IDS=C...,C... npm run testnet`.
+  Never commit real contract IDs from other projects to this repo.
 - **Network access** to `https://soroban-testnet.stellar.org` and
   `https://friendbot.stellar.org`
 
@@ -79,6 +107,9 @@ npm run testnet
 
 # 4a. With Redis
 REDIS_URL=redis://localhost:6379 npm run testnet
+
+# 4b. With Redis and foreign-contract-ID safety check
+REDIS_URL=redis://localhost:6379 FORBIDDEN_CONTRACT_IDS=C...,C... npm run testnet
 ```
 
 ---
@@ -114,7 +145,7 @@ WASM present: .../kv_test.wasm ✓
   WASM hash (from upload): <64-char hex hash>
   Deploying contract instance…
   Contract ID: <C...>
-  Contract ID safety check passed ✓
+  Contract ID safety check: not configured (set FORBIDDEN_CONTRACT_IDS to enable)
 
 ────────────────────────────────────────────────────────────
   Check A — WasmPipeline
@@ -150,7 +181,7 @@ WASM present: .../kv_test.wasm ✓
 |---------|-------------|
 | `stellar CLI not found` | Install the stellar CLI first |
 | Friendbot returns 400 | Testnet is experiencing issues; retry later |
-| `SAFETY STOP: deployed contract ID matches a known foreign contract` | The deployer account was reused across runs; this should not happen with fresh keys |
+| `SAFETY STOP: deployed contract ID matches an entry in FORBIDDEN_CONTRACT_IDS` | The deployed ID matched one of your known foreign IDs; check network and account |
 | A1 FAIL (hash mismatch) | The WASM binary changed between the build and upload steps |
 | B1 FAIL (more than 1 fetch) | The cache's LRU or TTL logic is not storing entries correctly |
 | C1 FAIL | A valid transaction failed; check the error in the rejected record |

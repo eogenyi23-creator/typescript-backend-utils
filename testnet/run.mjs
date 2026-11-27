@@ -41,6 +41,14 @@ const CONTRACT_DIR = resolve(__dirname, "contract");
 const LAST_RUN_PATH = resolve(__dirname, "last-run.txt");
 
 // ---------------------------------------------------------------------------
+// Import compiled helpers (built from testnet/helpers.ts via `npm run build`)
+// ---------------------------------------------------------------------------
+
+const { isTerminalStatus, checkForbiddenContractId } = await import(
+  join(REPO_ROOT, "dist/testnet/helpers.js")
+);
+
+// ---------------------------------------------------------------------------
 // Network constants
 // ---------------------------------------------------------------------------
 
@@ -150,21 +158,27 @@ async function rpcCall(method, params) {
  * Uses raw JSON-RPC (not the TypeScript SDK) so an SDK meta-decoding error
  * cannot turn into a false timeout.  Network errors are reported immediately
  * and do NOT silently continue the polling loop.
+ *
+ * Only SUCCESS and FAILED are terminal.  NOT_FOUND means the node has not
+ * yet indexed the transaction and is treated as non-terminal, the same as
+ * PENDING.  On timeout the error message includes the last status seen.
  */
 async function pollTransaction(hash, timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs;
+  let lastStatus = "(none)";
   while (Date.now() < deadline) {
     // Any error here is a real failure — not caught and swallowed.
     const res = await rpcCall("getTransaction", { hash });
-    const status = res.status;
-    if (status === "SUCCESS" || status === "FAILED" || status === "NOT_FOUND") {
+    lastStatus = res.status ?? "(missing)";
+    if (isTerminalStatus(lastStatus)) {
       return res;
     }
-    // PENDING or other non-terminal: wait and retry.
+    // NOT_FOUND, PENDING, or unknown — keep polling.
     await sleep(2000);
   }
   throw new Error(
-    `Transaction ${hash} did not reach a terminal state within ${timeoutMs} ms`
+    `Transaction ${hash} did not reach a terminal state within ${timeoutMs} ms` +
+    ` (last status: ${lastStatus})`
   );
 }
 
@@ -916,28 +930,26 @@ function formatSummaryTable(rows) {
 }
 
 // ---------------------------------------------------------------------------
-// Contract ID safety check (Task 3)
+// Contract ID safety check
 //
-// IDs are stored only in memory at runtime — not committed to the repo.
+// No foreign contract IDs are hard-coded in this file.  The operator supplies
+// a comma-separated list via the FORBIDDEN_CONTRACT_IDS environment variable
+// before running the harness.  The variable is never committed to the repo.
 // ---------------------------------------------------------------------------
 
 function assertNotForeignContract(contractId) {
-  // These IDs are known foreign contracts from other repos.
-  // They are checked at runtime only and are not stored in any committed file.
-  const forbidden = [
-    "CAEWW3XEBPQB2QIOWFZS6A2FRJR4Y6E75BWJYUEQQITO7Q4BT5KPODNB",
-    "CDKAXWO4DF5V3PLW4NGMUTSG4PH66G6VULMX2F4JIHX2IFRLFPI7WMAD",
-    "CCSOYARHTTTE6I5WT27EHGQEHZZMNI6KNT6SCTWDYIK6TDJ3HA3RLYDW",
-    "CBIV5DVEAKHGS3KQMBJB6J4KPQIVOHKNFE2IDS7UADHWNBST466MKBWQ",
-  ];
-  for (const id of forbidden) {
-    if (contractId === id) {
-      throw new Error(
-        `SAFETY STOP: deployed contract ID ${contractId} matches a known foreign contract. ` +
-        "Aborting. Check that you are on the right network and that the deployment is fresh."
-      );
-    }
+  const outcome = checkForbiddenContractId(contractId, process.env);
+  if (!outcome.configured) {
+    log("  Contract-ID safety check: not configured (set FORBIDDEN_CONTRACT_IDS to enable)");
+    return;
   }
+  if (outcome.matched) {
+    throw new Error(
+      `SAFETY STOP: deployed contract ID ${contractId} matches an entry in FORBIDDEN_CONTRACT_IDS. ` +
+      "Aborting. Check that you are on the right network and that the deployment is fresh."
+    );
+  }
+  log("  Contract-ID safety check: no match found ✓");
 }
 
 // ---------------------------------------------------------------------------

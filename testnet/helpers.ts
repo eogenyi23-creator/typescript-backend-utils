@@ -71,3 +71,46 @@ export function shouldSkipCheck(
   }
   return { skip: false };
 }
+
+/**
+ * Returns true only for statuses that mean the transaction has reached a
+ * permanent terminal state on the Stellar network.
+ *
+ * `NOT_FOUND` is intentionally excluded: immediately after submission the RPC
+ * often returns NOT_FOUND simply because the node has not yet indexed the
+ * transaction.  Treating it as terminal would cause false timeouts.
+ * `PENDING` is also non-terminal.  Any unrecognised status is treated as
+ * non-terminal so that new intermediate states do not silently stop polling.
+ *
+ * @param status - The `status` string from a `getTransaction` RPC response
+ */
+export function isTerminalStatus(status: string | undefined): boolean {
+  return status === "SUCCESS" || status === "FAILED";
+}
+
+/**
+ * Checks whether the deployed contract ID matches any entry in the
+ * `FORBIDDEN_CONTRACT_IDS` environment variable (comma-separated list
+ * supplied by the operator; never committed to the repo).
+ *
+ * Returns an object describing the outcome so callers can log and act:
+ *   - `{ configured: false }` — variable not set; nothing to check
+ *   - `{ configured: true, matched: false }` — no match; safe to continue
+ *   - `{ configured: true, matched: true, id: contractId }` — match; caller must abort
+ */
+export function checkForbiddenContractId(
+  contractId: string,
+  env: Record<string, string | undefined>
+): { configured: false } | { configured: true; matched: false } | { configured: true; matched: true; id: string } {
+  const raw = env.FORBIDDEN_CONTRACT_IDS;
+  if (!raw || raw.trim() === "") {
+    return { configured: false };
+  }
+  const forbidden = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  for (const id of forbidden) {
+    if (contractId === id) {
+      return { configured: true, matched: true, id: contractId };
+    }
+  }
+  return { configured: true, matched: false };
+}
