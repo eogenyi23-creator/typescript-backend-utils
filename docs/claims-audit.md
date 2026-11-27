@@ -63,23 +63,31 @@ The `check:claims` script (`npm run check:claims`) verifies that every `test-bac
 
 ---
 
-## Live evidence (not test-backed)
+## Live evidence
 
-These claims require running against real infrastructure and have not yet been executed.
-The Redis integration tests run in CI against a `redis:7` service container (see the
-`integration-tests` job in `.github/workflows/ci.yml`); those results are CI-backed but
-not from a production Redis deployment.
+These claims require running against real infrastructure. The Redis integration
+tests run in CI against a `redis:7` service container (see the
+`integration-tests` job in `.github/workflows/ci.yml`); those results are
+CI-backed but not from a production Redis deployment.
 
-The testnet harness (`npm run testnet`, described in `docs/testnet.md`) is designed to
-produce live evidence for rows L1–L5 once the owner runs it. Each row's status will be
-updated from `not yet run` to a dated result when the owner runs the harness and reports
-the output.
+The testnet harness (`npm run testnet`, described in `docs/testnet.md`) was run
+on 2026-11-27 at 16:06:30 UTC on `main` (PR #33 merged, merge commit `697d469`)
+in a GitHub Codespace. Full terminal output and the check table are in
+[`docs/testnet-run.md`](testnet-run.md). The harness ran against
+`Test SDF Network ; September 2015` with stellar CLI 30.0.1, Node v24.22.2, and
+Redis 7.0.15 on localhost. Result: **18 checks, 18 passed, 0 failed, 0 skipped**.
+Both re-confirmed transaction hashes were re-checked against the testnet RPC on
+2026-11-27 and returned `"status": "SUCCESS"`.
 
-| # | Claim | Infrastructure needed | Harness check | Status |
-|---|-------|----------------------|--------------|--------|
-| L1 | `contractCache` reads from a real Soroban testnet contract | Stellar testnet, funded account | B1–B3 (see `docs/testnet.md`) | not yet run |
-| L2 | `rpcRateLimiter` enforces limits against a real Redis instance | Redis instance | D1–D3 (see `docs/testnet.md`) | not yet run |
-| L3 | `transactionBatcher` submits real transactions to Soroban testnet | Stellar testnet, funded account, signed transactions | C1–C3 (see `docs/testnet.md`) | not yet run |
-| L4 | `horizonEventHandler` receives and verifies a real relay-forwarded Horizon event | Running relay service, Horizon testnet | E1–E6 run locally; relay-forwarded events not yet run | not yet run |
-| L5 | `wasmPipeline` SHA-256 matches the on-chain wasm-hash after `stellar contract install` | Stellar testnet, compiled WASM contract | A1 (see `docs/testnet.md`) | not yet run |
-| L6 | Redis integration tests: token bucket atomicity under real concurrent load | Production Redis deployment | not yet run (CI runs against redis:7 service container — see `integration-tests` job) | not yet run (CI runs against redis:7 service container — see `integration-tests` job) |
+"Where it ran" is stated per row: A, B, C ran against the Stellar testnet
+through the deployed contract; D ran against a local Redis (NOT Stellar's own
+RPC limits); E ran locally over HTTP only.
+
+| # | Claim | Infrastructure needed | Harness check | Where it ran | Status |
+|---|-------|----------------------|--------------|--------------|--------|
+| L1 | `contractCache` reads from a real Soroban testnet contract | Stellar testnet, funded account | B1–B3 | testnet (contract `CBKCMVFQZE7X6QA4VKAWE3IKBYUJBEBTTSGZY7BWQG3WFW52JC5UMZLQ`) | PASS — 2026-11-27 |
+| L2 | `rpcRateLimiter` enforces limits against a real Redis instance | Redis instance | D1–D3 | local Redis 7.0.15 | PASS — 2026-11-27 |
+| L3 | `transactionBatcher` submits real transactions to Soroban testnet | Stellar testnet, funded account | C1–C3 | testnet — tx hashes [`17c8939d…31f29`](https://stellar.expert/explorer/testnet/tx/17c8939d8f1d29755692d225ac2fe3f97386260105625fe67864b22386831f29) and [`8a6b1743…b95f`](https://stellar.expert/explorer/testnet/tx/8a6b1743625d622cb681628eafe1239c4ad7b0f4515b3dbe6d656dba8f0fb95f) | PASS — 2026-11-27 |
+| L4 | `horizonEventHandler` accepts a valid HMAC-signed request and rejects bad signatures, replays and missing headers | Local HTTP (relay-forwarded events not tested) | E1–E6 | local HTTP only | PASS — 2026-11-27 (relay-forwarded events remain untested) |
+| L5 | `wasmPipeline` SHA-256 matches the on-chain wasm-hash after `stellar contract upload` | Stellar testnet, compiled WASM contract | A1 | testnet — WASM hash `cf46518c3c6cc678788e52340431638a21d56c1c42822dc2643f1af0e4f10391` | PASS — 2026-11-27 |
+| L6 | Redis integration tests: token bucket atomicity under real concurrent load | Production Redis deployment | D1–D3 (harness) + CI `redis:7` service container | local Redis 7.0.15 (harness); CI `redis:7` service container (integration tests) | PASS — 2026-11-27 (single local instance; Redis Cluster untested) |

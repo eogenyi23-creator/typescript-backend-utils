@@ -36,6 +36,51 @@ Building on Stellar means wiring together RPC calls, Soroban contract reads, Hor
 | [`horizonEventHandler`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/horizonEventHandler.ts) | HMAC-verified handler for relay-delivered Horizon event callbacks |
 | [`wasmPipeline`](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/src/wasmPipeline.ts) | Streaming WASM validation and hash pipeline for Soroban contract uploads |
 
+## Verified against Stellar testnet
+
+On 2026-11-27 the full testnet harness (`npm run testnet` with Redis on
+localhost, after `npm run testnet:preflight`) was run end to end on `main`
+(merge commit of PR #33): **18 checks, 18 passed, 0 failed, 0 skipped**.
+
+- Deployed contract (this repo's `kv-test` fixture):
+  `CBKCMVFQZE7X6QA4VKAWE3IKBYUJBEBTTSGZY7BWQG3WFW52JC5UMZLQ`
+  — [contract explorer](https://stellar.expert/explorer/testnet/contract/CBKCMVFQZE7X6QA4VKAWE3IKBYUJBEBTTSGZY7BWQG3WFW52JC5UMZLQ)
+- WASM hash (from the real upload):
+  `cf46518c3c6cc678788e52340431638a21d56c1c42822dc2643f1af0e4f10391`
+- Re-confirmed transactions (SUCCESS via `getTransaction`):
+  [`17c8939d…31f29`](https://stellar.expert/explorer/testnet/tx/17c8939d8f1d29755692d225ac2fe3f97386260105625fe67864b22386831f29)
+  and
+  [`8a6b1743…b95f`](https://stellar.expert/explorer/testnet/tx/8a6b1743625d622cb681628eafe1239c4ad7b0f4515b3dbe6d656dba8f0fb95f)
+
+**What ran where:**
+
+- **Against the testnet** (through the deployed contract): the WasmPipeline
+  upload-hash check (A), the ContractCache checks (B) and the
+  TransactionBatcher checks (C).
+- **Against a local Redis** (not Stellar's own RPC limits): the RpcRateLimiter
+  checks (D) against a real local Redis 7.0.15.
+- **Locally over HTTP only** (no testnet, no relay): the HorizonEventHandler
+  checks (E).
+
+**Limits of this run:** mainnet; load or long-running behaviour; Stellar's
+real RPC rate-limit enforcement; Horizon streaming (SSE) and any real relay
+service; contract TTL expiry; Redis Cluster; `@stellar/stellar-sdk` versions
+other than the tested 13.1.0. Transactions in the batcher check were sent
+through the `stellar` CLI (the batcher's concurrency, retry and
+failure-isolation logic ran; transaction building is the CLI's). The test
+contract is a minimal fixture. No security audit. Full details in
+[`docs/testnet-run.md`](docs/testnet-run.md).
+
+**Reproduce:**
+
+```bash
+npm run testnet:preflight
+REDIS_URL=redis://localhost:6379 npm run testnet
+```
+
+Prerequisites (stellar CLI, Rust/wasm target, Redis) are listed in
+[`docs/testnet.md`](docs/testnet.md).
+
 ## Installation
 
 The package `soroban-ts-sdk` is **not confirmed as published** on the npm registry (checked 2026-11-27: `npm view soroban-ts-sdk` returns 404). Install directly from GitHub:

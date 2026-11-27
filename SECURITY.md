@@ -27,7 +27,7 @@ This library has not undergone a formal security audit. It is not formally verif
 
 ## What is and is not verified
 
-[`docs/claims-audit.md`](docs/claims-audit.md) contains a row-by-row mapping of every factual claim in the README, module headers, and this file to the implementing code and the test that exercises it. Status is `test-backed`, `code-only`, or `not verified`. The live-evidence table lists claims that require running against real infrastructure and have not yet been executed.
+[`docs/claims-audit.md`](docs/claims-audit.md) contains a row-by-row mapping of every factual claim in the README, module headers, and this file to the implementing code and the test that exercises it. Status is `test-backed`, `code-only`, or `not verified`. The live-evidence table in that file records the real run date and result for each claim.
 
 ## Security considerations by module
 
@@ -69,8 +69,10 @@ This library has not undergone a formal security audit. It is not formally verif
   file paths through this function before reading or processing them.
 - The pipeline computes SHA-256 matching the Stellar network's `wasm-hash`. Verify
   this hash on-chain before trusting a deployed contract. The hash match against the
-  network has not yet been verified in a live testnet run (see
-  [`docs/claims-audit.md`](docs/claims-audit.md) live-evidence row L5).
+  network was verified on 2026-11-27: WASM hash
+  `cf46518c3c6cc678788e52340431638a21d56c1c42822dc2643f1af0e4f10391` matched the
+  hash returned by the real upload (harness check A1 — see
+  [`docs/testnet-run.md`](docs/testnet-run.md)).
 
 ### `transactionBatcher`
 
