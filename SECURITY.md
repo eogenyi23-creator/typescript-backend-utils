@@ -33,9 +33,17 @@ If you discover a security vulnerability in soroban-ts-sdk, please report it by 
 - The limiter fails open on Redis errors — this is intentional to avoid cascading failures but means rate limiting is temporarily bypassed.
 
 ### `horizonEventHandler`
-- Uses `crypto.timingSafeEqual` for HMAC signature verification — never compare signatures with `===`.
-- Replay protection window defaults to 300 seconds. Adjust `maxAgeSeconds` based on your clock skew tolerance.
-- The in-memory idempotency store is not persistent — use Redis-backed storage in production for durability.
+- Uses `crypto.timingSafeEqual` for HMAC-SHA256 signature verification against the
+  `x-stellar-signature` header (also accepts `x-signature-sha256`). Never compare
+  signatures with `===`.
+- Replay protection: payloads older than `maxAgeSeconds` (default 300 s) or more than
+  60 s in the future are rejected with 400. Adjust `maxAgeSeconds` based on your clock
+  skew tolerance.
+- Horizon itself does not send webhooks. This handler is for use with a relay service
+  that forwards Horizon event data as HMAC-signed HTTP POST requests. The relay must
+  set the shared secret in the `x-stellar-signature` header.
+- The in-memory idempotency store (`HorizonIdempotencyStore`) does not survive process
+  restarts. Use `RedisIdempotencyStore` for durability across instances or restarts.
 
 ### `wasmPipeline`
 - Path traversal prevention is enforced via `validateWasmPath`. Always pass untrusted file paths through this function.

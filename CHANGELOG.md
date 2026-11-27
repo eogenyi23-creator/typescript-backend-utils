@@ -9,6 +9,47 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — docs/honest-docs-and-claims (Task 3: Fix the Horizon handler description)
+
+#### Changes
+- **README** `### Horizon Event Handler` section: replaced the former description
+  ("Process Stellar Horizon payment, ledger, and contract events with idempotency")
+  with an accurate description of what the handler actually does: verifies HMAC-SHA256
+  in `x-stellar-signature`, rejects payloads outside the replay window, deduplicates
+  by event ID, and explicitly notes that Horizon does not send webhooks.
+- **src/horizonEventHandler.ts** module header (started in Task 2): reflects the same
+  accurate framing — relay service, `x-stellar-signature` / `x-signature-sha256` header
+  names, 300 s default window, 60 s future clock-skew guard. No third-party service
+  names cited as integrations.
+- **SECURITY.md** `horizonEventHandler` section: rewritten to match the code — names
+  the two accepted signature headers, states the 300 s / 60 s timestamp rules, clarifies
+  that Horizon does not send webhooks, and notes the relay contract.
+
+#### Why
+The old description implied Horizon itself sends webhook callbacks ("Horizon streaming
+events", "Horizon webhook callbacks via third-party services"). Horizon uses SSE; the
+handler is for HMAC-signed HTTP callbacks from a relay that you operate. The description
+was wrong in the README, module header, and SECURITY.md.
+
+#### Verification
+```
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 122 passed
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+```
+Signature header names verified in source: `src/horizonEventHandler.ts` line ~300:
+  `req.headers["x-stellar-signature"] ?? req.headers["x-signature-sha256"]`
+Default `maxAgeSeconds`: 300 s (`config.maxAgeSeconds ?? 300`)
+Future-timestamp guard: 60 s (`age < -60`)
+
+#### Limits
+No code behaviour was changed. The examples use `process.env['HORIZON_WEBHOOK_SECRET']`
+as the secret; the name of that env var is a placeholder, not a protocol requirement.
+
+---
+
 ### 2026-11-27 — docs/honest-docs-and-claims (Task 2: Remove overclaims and fix naming)
 
 #### Changes
