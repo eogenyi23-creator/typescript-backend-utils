@@ -1,6 +1,6 @@
 # typescript-backend-utils
 
-> TypeScript building blocks for Stellar/Soroban backend development: contract state cache, RPC rate limiter, transaction batcher, Horizon event handler, and WASM upload pipeline.
+> TypeScript utilities for Stellar/Soroban backends: contract state cache, RPC rate limiter, transaction batcher, Horizon event handler, WASM pipeline. Tested on testnet.
 
 [![CI](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml/badge.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/LICENSE) [![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://developers.stellar.org/docs/smart-contracts)
 
