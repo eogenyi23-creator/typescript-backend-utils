@@ -70,11 +70,16 @@ The Redis integration tests run in CI against a `redis:7` service container (see
 `integration-tests` job in `.github/workflows/ci.yml`); those results are CI-backed but
 not from a production Redis deployment.
 
-| # | Claim | Infrastructure needed | Status |
-|---|-------|----------------------|--------|
-| L1 | `contractCache` reads from a real Soroban testnet contract | Stellar testnet, funded account | not yet run |
-| L2 | `rpcRateLimiter` enforces limits against a real Soroban RPC node | Soroban testnet RPC | not yet run |
-| L3 | `transactionBatcher` submits real transactions to Soroban testnet | Stellar testnet, funded account, signed transactions | not yet run |
-| L4 | `horizonEventHandler` receives and verifies a real relay-forwarded Horizon event | Running relay service, Horizon testnet | not yet run |
-| L5 | `wasmPipeline` SHA-256 matches the on-chain wasm-hash after `stellar contract install` | Stellar testnet, compiled WASM contract | not yet run |
-| L6 | Redis integration tests: token bucket atomicity under real concurrent load | Production Redis deployment | not yet run (CI runs against redis:7 service container — see `integration-tests` job) |
+The testnet harness (`npm run testnet`, described in `docs/testnet.md`) is designed to
+produce live evidence for rows L1–L5 once the owner runs it. Each row's status will be
+updated from `not yet run` to a dated result when the owner runs the harness and reports
+the output.
+
+| # | Claim | Infrastructure needed | Harness check | Status |
+|---|-------|----------------------|--------------|--------|
+| L1 | `contractCache` reads from a real Soroban testnet contract | Stellar testnet, funded account | B1–B3 (see `docs/testnet.md`) | not yet run |
+| L2 | `rpcRateLimiter` enforces limits against a real Redis instance | Redis instance | D1–D2 (see `docs/testnet.md`) | not yet run |
+| L3 | `transactionBatcher` submits real transactions to Soroban testnet | Stellar testnet, funded account, signed transactions | C1–C3 (see `docs/testnet.md`) | not yet run |
+| L4 | `horizonEventHandler` receives and verifies a real relay-forwarded Horizon event | Running relay service, Horizon testnet | E1–E6 run locally; relay-forwarded events not yet run | not yet run |
+| L5 | `wasmPipeline` SHA-256 matches the on-chain wasm-hash after `stellar contract install` | Stellar testnet, compiled WASM contract | A1 (see `docs/testnet.md`) | not yet run |
+| L6 | Redis integration tests: token bucket atomicity under real concurrent load | Production Redis deployment | not yet run (CI runs against redis:7 service container — see `integration-tests` job) | not yet run (CI runs against redis:7 service container — see `integration-tests` job) |

@@ -9,6 +9,149 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — feat/testnet-harness (Task 1: kv-test Soroban contract)
+
+#### Changes
+- **`testnet/contract/`**: New Cargo workspace (separate from the npm package).
+  - `kv-test` crate: minimal Soroban contract with `set(key, value)`,
+    `get(key) → Option<u64>`, and `increment(key) → u64`. Persistent storage;
+    TTL extended on every write (17 280 ledgers ≈ 24 h). No auth — documented
+    as a test fixture only.
+  - `rust-toolchain.toml`: pins `stable` channel with `wasm32v1-none` target,
+    `rustfmt`, and `clippy`.
+  - `Cargo.lock` committed with `ed25519-dalek` pinned to `2.2.0`.
+  - 7 unit tests via `soroban-sdk` testutils: set/get, missing key, increment
+    from zero, increment across multiple calls, increment builds on set,
+    overwrite with set, independent keys.
+- **Dependency conflict resolved**: `soroban-env-host 22.1.3` declares
+  `ed25519-dalek = ">=2.0.0"` but was written against the rand_core 0.6 API
+  of version 2.x. Without intervention Cargo resolves to 3.0.0, whose
+  `SigningKey::generate` takes a rand_core 0.10 `CryptoRng`, which
+  `ChaCha20Rng` (rand_core 0.6) does not satisfy. Fix: `Cargo.lock` pins
+  `ed25519-dalek` to `2.2.0` via `cargo update ed25519-dalek@3.0.0 --precise
+  2.2.0`. Explanation written in `testnet/contract/Cargo.toml`.
+- **`.gitignore`**: Added `testnet/last-run.txt` and `testnet/contract/target/`.
+- **`.github/workflows/ci.yml`**: Added `contract` job (fmt, clippy, test,
+  build) using `dtolnay/rust-toolchain@stable`.
+
+#### Why
+Part 3a requires a contract owned exclusively by this repo; no foreign contract
+ID may be used. This minimal KV fixture is the smallest contract that exercises
+all three check types (read, write, increment).
+
+#### Verification
+```
+cargo fmt --all -- --check   → exit 0  (in testnet/contract/)
+cargo clippy --all-targets -- -D warnings → exit 0
+cargo test --locked          → 7 passed, 0 failed
+stellar contract build       → kv_test.wasm 1401 bytes, wasm hash printed
+npm run lint                 → exit 0
+npm run build                → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 128 passed
+npm run check:examples       → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims         → 46 rows validated. test-backed: 45 code-only: 1 ✓
+```
+
+#### Limits
+- Contract has no auth. Intentional — it is a test fixture.
+- The `--precise` pin only applies while the Cargo.lock is respected; `cargo
+  update` without `--locked` could re-introduce 3.0.0 on a future run.
+- WASM build requires the `wasm32v1-none` target; not in a default Rust install.
+
+---
+
+### 2026-11-27 — feat/testnet-harness (Task 2: testnet harness script)
+
+#### Changes
+- **`testnet/run.mjs`**: Node ESM harness, runnable with `npm run testnet`.
+  - Prerequisite check: Node ≥ 20, stellar CLI present, WASM built (builds if
+    missing).
+  - Generates fresh throwaway keypairs via `stellar keys generate --no-fund`
+    and funds them through Friendbot. Keys are never written to disk or printed.
+  - Deploys a fresh kv-test contract instance per run via `stellar contract
+    install` + `stellar contract deploy`. Prints real WASM hash and contract ID.
+  - Contract ID safety check: refuses to proceed if the deployed ID matches any
+    known foreign contract (IDs checked at runtime only; not committed).
+  - Check A (WasmPipeline): SHA-256 match, non-WASM rejection, sandbox path
+    rejection.
+  - Check B (ContractCache): single-fetch for two reads, re-read after
+    `cache.delete()`, missing key returns null.
+  - Check C (TransactionBatcher): 2 valid + 1 invalid task; valid succeed,
+    invalid fails independently; on-chain counters verified.
+  - Check D (RpcRateLimiter): requires `REDIS_URL`; fires 65 requests against
+    60-token bucket; asserts 60 allowed / 5 blocked; bucket reset.
+  - Check E (HorizonEventHandler): local only; valid, wrong sig, duplicate,
+    old timestamp, future timestamp, missing sig.
+  - Polling uses raw JSON-RPC `getTransaction` (not SDK); errors are propagated,
+    never swallowed in a `catch { continue }`.
+  - Summary table printed; full output written to `testnet/last-run.txt`
+    (git-ignored).
+  - Exits non-zero if any check fails; skipped checks are never counted as pass.
+- **`testnet/helpers.ts`**: Pure helper functions (`buildSummaryTable`,
+  `formatSummaryTable`, `shouldSkipCheck`) extracted for unit testing.
+- **`package.json`**: Added `"testnet": "node testnet/run.mjs"` script.
+  Added `"!dist/testnet"` to `files` to keep test helpers out of the published
+  package.
+- **`tsconfig.json`**: `rootDir` widened to `.` and `testnet/helpers.ts` added
+  to `include` so the helpers compile and are importable from tests.
+
+#### Why
+The harness fulfils the requirement that anyone can run a live check with one
+command. It fails loudly on every problem rather than masking errors.
+
+#### Verification
+```
+node --input-type=module --check < testnet/run.mjs → exit 0
+npm run lint                 → exit 0
+npm run build                → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 142 passed (14 new)
+npm run check:examples       → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims         → 46 rows validated. ✓
+```
+Live run: not yet run — awaiting owner execution.
+
+#### Limits
+- `stellar contract invoke` does not expose the transaction hash in its stdout;
+  the `--verbose` stderr line is searched as a best-effort fallback. Check C3
+  verifies on-chain state directly.
+- Check D simulates window refill by deleting the Redis key; real window expiry
+  would require waiting 60 s.
+
+---
+
+### 2026-11-27 — feat/testnet-harness (Task 4: docs, unit tests, claims-audit update)
+
+#### Changes
+- **`docs/testnet.md`**: New document. Describes each check, prerequisites
+  (stellar CLI, Rust target, Node, optional Redis), exact commands, expected
+  output format, failure meanings, and what the harness does NOT cover.
+- **`tests/harnessHelpers.test.ts`**: 14 unit tests for `buildSummaryTable`,
+  `formatSummaryTable`, and `shouldSkipCheck` from `testnet/helpers.ts`. No
+  network or file I/O.
+- **`docs/claims-audit.md`**: Live evidence rows L1–L5 now reference
+  `docs/testnet.md` and name the specific harness check that will produce each
+  piece of evidence. Status remains `not yet run`.
+
+#### Why
+Tests give a regression safety net for the pure helper logic. The docs give the
+owner everything needed to run the harness without reading the script source.
+
+#### Verification
+```
+npm run lint                 → exit 0
+npm run build                → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 142 passed
+npm run check:examples       → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims         → 46 rows validated. ✓
+```
+
+#### Limits
+Harness helper unit tests cover only the pure functions. The check functions
+themselves (A–E) are integration-tested only via a live run.
+
 ### 2026-11-27 — docs/honest-docs-and-claims (Task 5: SECURITY.md and CONTRIBUTING)
 
 #### Changes
