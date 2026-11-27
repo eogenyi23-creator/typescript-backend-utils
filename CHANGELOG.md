@@ -9,6 +9,48 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — docs/honest-docs-and-claims (Task 5: SECURITY.md and CONTRIBUTING)
+
+#### Changes
+- **SECURITY.md**: Fully rewritten.
+  - Vulnerability reporting now points to a GitHub private security advisory link
+    instead of a vague "email the maintainer" instruction.
+  - Added plain "Not audited" section.
+  - Added "What is and is not verified" section pointing to `docs/claims-audit.md`.
+  - `horizonEventHandler` section rewritten to match the accurate description from
+    Task 3: names the two accepted signature headers, states the 300 s / 60 s rules,
+    clarifies Horizon does not send webhooks.
+  - `wasmPipeline` section now links to the live-evidence row for the network hash claim.
+  - Removed informal phrasing; kept all substantive module notes.
+- **CONTRIBUTING.md**: Was rewritten in Task 2. Verified it contains all required
+  scripts: `check:examples`, `check:readme-examples`, `check:claims`, and the Redis
+  integration test command (`REDIS_URL=redis://localhost:6379 npm run test:integration`).
+  No "production-ready" language. Node version is "20 or 22".
+
+#### Why
+- The old reporting instruction said "email the maintainer directly" with no address —
+  useless to anyone who finds the file. A GitHub advisory link is concrete.
+- The `horizonEventHandler` SECURITY.md section still had the old inaccurate description
+  after Task 3 updated the other files.
+- The "Not audited" statement was at the bottom of the file; moving it near the top
+  makes it easier to find.
+
+#### Verification
+```
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 128 passed
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims → 46 rows validated. test-backed: 45  code-only: 1 ✓
+```
+
+#### Limits
+The GitHub advisory link targets the actual repo. Its availability was not verified
+in this environment.
+
+---
+
 ### 2026-11-27 — docs/honest-docs-and-claims (Task 4: Claims audit)
 
 #### Changes
