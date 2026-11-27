@@ -34,6 +34,21 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify package entry point
+        run: |
+          node -e "
+          import('./dist/index.js').then(m => {
+            const names = ['ContractCache','RpcRateLimiter','TransactionBatcher','HorizonEventHandler','WasmPipeline'];
+            for (const n of names) {
+              if (!(n in m)) { console.error('missing export ' + n); process.exit(1); }
+            }
+            console.log('entry point ok');
+          }).catch(e => { console.error('import failed:', e.message); process.exit(1); });
+          "
+
+      - name: Verify pack contents
+        run: npm pack --dry-run 2>&1 | grep "dist/index.js" || { echo "dist/index.js missing from pack"; exit 1; }
+
       - name: Type-check examples
         run: npm run check:examples
 

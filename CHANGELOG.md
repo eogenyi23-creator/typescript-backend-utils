@@ -9,6 +9,81 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/build-output-path (Task 1: restore package build output path and guard in CI)
+
+#### Changes
+- **`tsconfig.json`** — restored `"rootDir": "./src"` and `"include": ["src/**/*"]`,
+  exactly as before the testnet harness work.  `npm run build` again writes
+  `dist/index.js`, `dist/contractCache.js`, etc. at the top of `dist/`.
+- **`tsconfig.testnet.json`** — new file extending the main config with
+  `"rootDir": "./testnet"`, `"outDir": "./dist-testnet"`, and
+  `"include": ["testnet/helpers.ts"]`.  The harness helpers compile independently
+  of the package.
+- **`.gitignore`** — added `dist-testnet/`.
+- **`package.json`** — added `"build:testnet": "tsc -p tsconfig.testnet.json"`;
+  changed `"testnet"` script to `"npm run build:testnet && node testnet/run.mjs"`
+  so the harness helpers are always up to date before the harness runs; removed
+  `"!dist/testnet"` from `"files"` (no longer needed).
+- **`testnet/run.mjs`** — updated the import of compiled helpers from
+  `dist/testnet/helpers.js` → `dist-testnet/helpers.js`.
+- **`docs/testnet.md`** — updated the prerequisites note and the commands example
+  to reflect that `npm run testnet` auto-builds the helpers.
+- **`.github/workflows/ci.yml`** — added two steps after Build in the
+  `build-and-test` job:
+  - *Verify package entry point*: imports `./dist/index.js` and asserts that
+    `ContractCache`, `RpcRateLimiter`, `TransactionBatcher`, `HorizonEventHandler`,
+    and `WasmPipeline` are present; exits 1 if any is missing.
+  - *Verify pack contents*: runs `npm pack --dry-run` and greps for
+    `dist/index.js`; exits 1 if the line is absent.
+
+#### Why
+Part 3a changed `tsconfig.json` to `"rootDir": "."` so that
+`testnet/helpers.ts` could be compiled alongside `src/`.  This moved all
+output under `dist/src/` and `dist/testnet/`, leaving `dist/index.js` absent.
+`package.json` still pointed at `dist/index.js`, so anyone installing the
+package got a broken module.  `tsc` exited 0, so CI did not catch it.
+
+The fix compiles the package source and the harness helpers with separate
+`tsconfig` files, restoring the flat `dist/` layout the package has always
+declared.
+
+#### Verification
+Reproduction on `main` before fix:
+```
+rm -rf dist && npm run build
+ls dist/          → src/  testnet/   (dist/index.js absent)
+node -e "import('./dist/index.js')..."
+  → FAIL: Cannot find module '…/dist/index.js'
+```
+
+After fix:
+```
+npm run lint                  → exit 0
+npm run build                 → exit 0
+ls dist/          → contractCache.js  horizonEventHandler.js  index.js
+                     rpcRateLimiter.js  transactionBatcher.js  wasmPipeline.js
+node -e "import('./dist/index.js').then(()=>console.log('ok'))"  → ok
+npm run build:testnet         → exit 0  (writes dist-testnet/helpers.js)
+npm test -- --testPathIgnorePatterns="tests/integration"
+  → 155 passed, 0 failed
+npm run check:examples        → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims          → 46 rows validated. ✓
+npm pack --dry-run            → lists dist/index.js; no dist-testnet or testnet files
+```
+
+CI guard (run locally):
+```
+node -e "import('./dist/index.js').then(m=>{...})"  → entry point ok
+npm pack --dry-run 2>&1 | grep "dist/index.js"      → dist/index.js confirmed
+```
+
+#### Limits
+The `tsconfig.testnet.json` `outDir` (`dist-testnet/`) is local-only and
+git-ignored; it is rebuilt automatically by `npm run testnet`.  CI does not
+pre-build it because the testnet job requires testnet access and is not part
+of the automated CI suite.
+
 ### 2026-11-27 — fix/harness-corrections (Task 1: remove foreign contract IDs from committed file)
 
 #### Changes

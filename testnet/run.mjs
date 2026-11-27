@@ -41,11 +41,11 @@ const CONTRACT_DIR = resolve(__dirname, "contract");
 const LAST_RUN_PATH = resolve(__dirname, "last-run.txt");
 
 // ---------------------------------------------------------------------------
-// Import compiled helpers (built from testnet/helpers.ts via `npm run build`)
+// Import compiled helpers (built from testnet/helpers.ts via `npm run build:testnet`)
 // ---------------------------------------------------------------------------
 
 const { isTerminalStatus, checkForbiddenContractId } = await import(
-  join(REPO_ROOT, "dist/testnet/helpers.js")
+  join(REPO_ROOT, "dist-testnet/helpers.js")
 );
 
 // ---------------------------------------------------------------------------
