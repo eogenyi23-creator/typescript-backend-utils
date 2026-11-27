@@ -1,89 +1,118 @@
 # Contributing to typescript-backend-utils
 
-First off, thank you for taking the time to contribute! 🎉 
+Thank you for taking the time to contribute.
 
-This project aims to provide production-ready, highly isolated TypeScript utilities for Stellar and Soroban backend development. Because this is a toolkit rather than a monolithic framework, we maintain strict architectural standards around modularity, low overhead, and comprehensive test coverage.
-
-Please take a moment to review this document before submitting your first Pull Request.
+This project provides TypeScript utilities for Stellar and Soroban backend development. Because it is a toolkit rather than a monolithic framework, each module in `src/` is kept standalone with its own tests.
 
 ---
 
-## 🛠️ Local Development Setup
+## Local Development Setup
 
 ### Prerequisites
-- **Node.js** v20 or higher
+- **Node.js** 20 or 22 (the CI-tested versions)
 - **npm** or **pnpm**
-- **Redis** running locally (required to run the full integration test suites for `contractCache` and `rpcRateLimiter`)
+- **Redis** (optional — only needed for `REDIS_URL=redis://localhost:6379 npm run test:integration`)
 
-### Installation & Build
-1. Fork the repository on GitHub and clone your fork locally:
+### Installation and build
+
+1. Fork and clone:
    ```bash
-   git clone https://github.com
+   git clone https://github.com/eogenyi23-creator/typescript-backend-utils
    cd typescript-backend-utils
    ```
-2. Install the necessary dependencies:
+2. Install dependencies:
    ```bash
    npm install
    ```
-3. Verify the build pipeline works correctly:
+3. Verify the build:
    ```bash
    npm run build
    ```
 
 ---
 
-## 🧪 Code Quality Standards
+## Code quality
 
-We enforce strict linting, formatting, and unit testing guidelines to keep the codebase stable and reliable.
+### Type check and lint
 
-### Linting & Formatting
-Before committing, ensure your code matches our style rules:
 ```bash
 npm run lint
 ```
-*Note: Ensure your editor uses the project's configuration rules (e.g., Prettier/ESLint configs) to prevent formatting conflicts.*
 
-### Automated Testing
-Every utility module must be accompanied by robust unit tests. We use **Jest** for our testing framework.
-- **Run all tests:**
-  ```bash
-  npm test
-  ```
-- **Guidelines for writing tests:**
-  - Mock external Stellar RPC or Horizon API endpoints rather than triggering live net calls.
-  - Include edge cases for network failures, timeouts, and rate limits (especially for `transactionBatcher` and `rpcRateLimiter`).
-  - Maintain a high percentage of test coverage for all new utility code.
+This runs `tsc --noEmit` over `src/`. There is no separate ESLint config.
+
+### Unit tests
+
+```bash
+npm test
+```
+
+Runs all tests in `tests/` except `tests/integration/`. No Redis required.
+
+```bash
+npm run test:coverage
+```
+
+Same, with a coverage report.
+
+### Integration tests (Redis required)
+
+```bash
+REDIS_URL=redis://localhost:6379 npm run test:integration
+```
+
+The integration tests in `tests/integration/redis.test.ts` are skipped with a clear message when `REDIS_URL` is not set.
+
+### Type-check examples
+
+```bash
+npm run check:examples
+```
+
+Runs `tsc --noEmit` over `examples/` using `tsconfig.examples.json`.
+
+### Verify README snippets match example files
+
+```bash
+npm run check:readme-examples
+```
+
+### Verify claims audit
+
+```bash
+npm run check:claims
+```
+
+Checks that every `test-backed` row in `docs/claims-audit.md` names a test file and
+test title that actually exist in `tests/`.
 
 ---
 
-## 📐 Project Architecture Principles
+## Architecture principles
 
-When adding features or fixing bugs, keep these design boundaries in mind:
-
-1. **Standalone Modularity:** Each module inside `src/` (e.g., `contractCache.ts`, `wasmPipeline.ts`) should operate with minimal dependency on other modules in the SDK. 
-2. **Strict Peer Dependencies:** Heavy external libraries (like `ioredis` or `@stellar/stellar-sdk`) must remain as `peerDependencies` rather than core dependencies. The toolkit should not bloat a developer's production bundle if they only use a single module.
-3. **No Hidden State:** Ensure components are highly configurable via constructor options or initialization payloads, allowing developers to supply their own server instances or configurations easily.
+1. **Standalone modules:** each file in `src/` works without importing from the others.
+2. **Peer dependencies:** `ioredis` and `@stellar/stellar-sdk` stay as `peerDependencies` so consumers are not forced to include them if they use only some modules.
+3. **Configurable:** pass server instances, Redis clients, and options in constructors — no hidden global state.
 
 ---
 
-## 🚀 The Pull Request Process
+## Pull request process
 
-1. **Check Existing Issues:** Before writing code, browse open issues or open a new one to discuss your proposed changes. Look for the `good first issue` label if you are looking for a place to start!
-2. **Branch Naming:** Create a focused feature branch from `main`:
+1. Create a focused branch from `main`.
+2. Add or update tests for any behaviour change.
+3. Run the full check sequence before opening a PR:
    ```bash
-   git checkout -b feature/your-feature-name
-   # or
-   git checkout -b fix/your-bug-fix
+   npm run lint
+   npm run build
+   npm test
+   npm run check:examples
+   npm run check:readme-examples
+   npm run check:claims
    ```
-3. **Keep Commit Messages Clean:** Write clear, concise, and descriptive commit messages.
-4. **Submit for Review:** 
-   - Open a Pull Request targeting the `main` branch.
-   - Describe the problem your PR solves and your implementation strategy.
-   - Link the relevant issue number in your description.
-5. **CI Pipeline Pass:** Ensure the GitHub Actions automated CI build and test check passes successfully on your PR branch.
+4. Open a PR targeting `main` and ensure CI passes.
 
 ---
 
-## 🛡️ Security Vulnerabilities
+## Security vulnerabilities
 
-Please do not report security vulnerabilities via public GitHub issues. Review our [SECURITY.md](SECURITY.md) guidelines for how to securely report vulnerabilities to the maintainers.
+Do not report security vulnerabilities via public GitHub issues. See [SECURITY.md](SECURITY.md) for the reporting process.

@@ -9,6 +9,56 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — docs/honest-docs-and-claims (Task 2: Remove overclaims and fix naming)
+
+#### Changes
+- **README**: Added a "Names" section at the top (GitHub repo vs npm package vs import).
+- **README**: Install section rewritten — `soroban-ts-sdk` is not on npm (confirmed
+  404 from `npm view soroban-ts-sdk`; checked 2026-11-27). Instructions now show
+  GitHub install; a commented-out `npm install soroban-ts-sdk` line is included for
+  when it is eventually published.
+- **README**: Added SDK version note: tested with `@stellar/stellar-sdk@13.1.0`;
+  peer dependency range `>=12.0.0`; older and newer versions untested.
+- **README**: Node version note: tested on Node 20.x and 22.x; Node 20+ required.
+- **README**: Removed "well-tested, composable" from the description paragraph;
+  replaced with "tested TypeScript modules".
+- **README**: `horizonEventHandler` table description changed from "Secure, idempotent
+  handler for Horizon streaming events" to "HMAC-verified handler for relay-delivered
+  Horizon event callbacks" (Task 3 work starts here; full rewrite in Task 3).
+- **README**: Development section expanded with integration test command.
+- **CONTRIBUTING.md**: Rewritten — removed "production-ready" sentence; corrected
+  all npm scripts to real names; added `check:examples`, `check:readme-examples`,
+  `check:claims`; added Redis integration test command; removed incorrect claim
+  about ESLint; updated Node version to "20 or 22".
+- **src/horizonEventHandler.ts**: Module header rewritten — removed "streaming events"
+  and "webhook callbacks via third-party services"; now accurately describes what it
+  does (HMAC-signed HTTP callbacks from a relay, signature header names, timestamp
+  rules, replay window). Full Task 3 rewrite in Task 3.
+
+#### Why
+- npm 404 makes the `npm install soroban-ts-sdk` instruction wrong for any reader.
+- "well-tested, composable" are not measurable claims tied to anything in the code.
+- "streaming events" and "webhook callbacks" misrepresent how Horizon and the handler
+  actually work.
+- Node and SDK version claims were vague; pinning to what CI tests is accurate.
+
+#### Verification
+```
+npm view soroban-ts-sdk → npm error 404 Not Found
+npm run lint       → exit 0
+npm run build      → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 122 passed
+npm run check:examples     → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+```
+
+#### Limits
+- Full Horizon handler description rewrite deferred to Task 3.
+- SECURITY.md naming and description updates deferred to Task 5.
+- npm publish status: 404 as of 2026-11-27; not verified on alternative registries.
+
+---
+
 ### 2026-11-27 — docs/honest-docs-and-claims (Task 1: One changelog)
 
 #### Changes
