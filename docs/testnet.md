@@ -69,7 +69,7 @@ pair. No testnet connection is made for check E.
 
 - **Node.js 20 or 22**
 - **npm ci** (or dependencies already installed)
-- **npm run build** (the harness imports from `dist/`)
+- **npm run build** (the harness imports the SDK modules from `dist/`; `npm run testnet` builds the harness helpers into `dist-testnet/` automatically)
 
 ### Optional
 
@@ -102,7 +102,7 @@ rustup target add wasm32v1-none
 npm ci
 npm run build
 
-# 4. Run the harness
+# 4. Run the harness (builds harness helpers automatically, then runs)
 npm run testnet
 
 # 4a. With Redis
