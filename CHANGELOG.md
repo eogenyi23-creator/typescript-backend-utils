@@ -9,6 +9,36 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/verify-and-readme (Task 1: Baseline audit)
+
+#### Changes
+- No code changes. Recorded exact baseline state before any modifications.
+
+#### Why
+Step 0 audit to confirm whether anything fails before touching the repo.
+
+#### Verification
+```
+Node v24.22.2, npm 11.19.1
+
+npm run lint   → exit 0  (tsc --noEmit, no errors)
+npm run build  → exit 0
+npm test -- --coverage → 5 suites, 99 tests, 0 failures
+
+Coverage:
+  contractCache.ts       86.5% stmts  83.87% branch
+  horizonEventHandler.ts 72.04% stmts 67.39% branch
+  rpcRateLimiter.ts      78.78% stmts 41.66% branch
+  transactionBatcher.ts  66.66% stmts 36.36% branch
+  wasmPipeline.ts        74.03% stmts 53.84% branch
+  All files              76.5%  stmts 65.47% branch
+```
+
+#### Limits
+No failures at baseline. All 99 tests pass on Node v24.22.2.
+
+---
+
 ### Changed
 - Renamed package from `typescript-backend-utils` to `soroban-ts-sdk` to clearly
   reflect the package's Soroban/Stellar focus
