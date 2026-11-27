@@ -3,8 +3,9 @@
  *
  * These tests do not require a network connection, a stellar CLI, Redis, or a
  * deployed contract.  They cover the summary-table builder, the skip logic,
- * the output formatter, the terminal-status predicate, and the contract-ID
- * safety check so that regressions are caught without a live run.
+ * the output formatter, the terminal-status predicate, the contract-ID
+ * safety check, the CLI argument builders, the transaction-hash parser, and
+ * the preflight flag checker so that regressions are caught without a live run.
  */
 
 import {
@@ -13,6 +14,16 @@ import {
   shouldSkipCheck,
   isTerminalStatus,
   checkForbiddenContractId,
+  argsKeysGenerate,
+  argsKeysAddress,
+  argsKeysRm,
+  argsContractBuild,
+  argsContractUpload,
+  argsContractDeploy,
+  argsContractInvoke,
+  parseTransactionHash,
+  getPreflightSpecs,
+  checkPreflightFlags,
   type CheckResult,
   type SummaryRow,
 } from "../testnet/helpers.js";
@@ -238,5 +249,232 @@ describe("checkForbiddenContractId", () => {
     if (result.configured) {
       expect(result.matched).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI argument builders
+// ---------------------------------------------------------------------------
+
+describe("argsKeysGenerate", () => {
+  it("produces [keys, generate, <name>] with no extra flags", () => {
+    const args = argsKeysGenerate("harness-test-abcd");
+    expect(args).toEqual(["keys", "generate", "harness-test-abcd"]);
+    // Confirm --no-fund is absent (it does not exist in stellar 30.0.1)
+    expect(args).not.toContain("--no-fund");
+    expect(args).not.toContain("--fund");
+  });
+});
+
+describe("argsKeysAddress", () => {
+  it("uses the canonical public-key subcommand (not the address alias)", () => {
+    const args = argsKeysAddress("my-key");
+    expect(args).toEqual(["keys", "public-key", "my-key"]);
+  });
+});
+
+describe("argsKeysRm", () => {
+  it("includes --force to suppress the interactive prompt", () => {
+    const args = argsKeysRm("harness-deployer-1234");
+    expect(args).toEqual(["keys", "rm", "--force", "harness-deployer-1234"]);
+  });
+});
+
+describe("argsContractBuild", () => {
+  it("produces [contract, build] with no extra flags", () => {
+    expect(argsContractBuild()).toEqual(["contract", "build"]);
+  });
+});
+
+describe("argsContractUpload", () => {
+  it("uses contract upload (not the deprecated contract install)", () => {
+    const args = argsContractUpload("/path/to/kv_test.wasm", "my-key", "testnet");
+    expect(args[0]).toBe("contract");
+    expect(args[1]).toBe("upload");
+    // Must not use the deprecated 'install' subcommand
+    expect(args).not.toContain("install");
+    expect(args).toContain("--wasm");
+    expect(args).toContain("--source");
+    expect(args).toContain("--network");
+    expect(args).toContain("/path/to/kv_test.wasm");
+    expect(args).toContain("my-key");
+    expect(args).toContain("testnet");
+  });
+});
+
+describe("argsContractDeploy", () => {
+  it("includes --wasm-hash, --source, and --network", () => {
+    const args = argsContractDeploy("deadbeef1234", "my-key", "testnet");
+    expect(args[0]).toBe("contract");
+    expect(args[1]).toBe("deploy");
+    expect(args).toContain("--wasm-hash");
+    expect(args).toContain("deadbeef1234");
+    expect(args).toContain("--source");
+    expect(args).toContain("my-key");
+    expect(args).toContain("--network");
+    expect(args).toContain("testnet");
+  });
+});
+
+describe("argsContractInvoke", () => {
+  it("uses --id alias for --contract-id and --source alias for --source-account", () => {
+    const CONTRACT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const args = argsContractInvoke(CONTRACT, "my-key", "testnet", "get", ["--key", "foo"]);
+    expect(args).toContain("--id");
+    expect(args).toContain(CONTRACT);
+    expect(args).toContain("--source");
+    expect(args).toContain("my-key");
+    expect(args).toContain("--network");
+    expect(args).toContain("testnet");
+    // Function name and args follow --
+    const ddIdx = args.indexOf("--");
+    expect(ddIdx).toBeGreaterThan(0);
+    expect(args[ddIdx + 1]).toBe("get");
+    expect(args[ddIdx + 2]).toBe("--key");
+    expect(args[ddIdx + 3]).toBe("foo");
+  });
+
+  it("passes an empty fnArgs array without extra elements after --", () => {
+    const CONTRACT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const args = argsContractInvoke(CONTRACT, "my-key", "testnet", "increment", []);
+    const ddIdx = args.indexOf("--");
+    expect(ddIdx).toBeGreaterThan(0);
+    expect(args[ddIdx + 1]).toBe("increment");
+    expect(args.length).toBe(ddIdx + 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseTransactionHash
+// ---------------------------------------------------------------------------
+
+// A valid 64-character hex transaction hash
+const VALID_HASH = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+
+describe("parseTransactionHash", () => {
+  it("extracts a valid 64-char hex hash from a plain string", () => {
+    expect(parseTransactionHash(VALID_HASH)).toBe(VALID_HASH);
+  });
+
+  it("extracts a hash embedded in surrounding text", () => {
+    const text = `Transaction submitted: ${VALID_HASH} confirmed.`;
+    expect(parseTransactionHash(text)).toBe(VALID_HASH);
+  });
+
+  it("returns null when the string is empty", () => {
+    expect(parseTransactionHash("")).toBeNull();
+  });
+
+  it("returns null when no 64-char hex sequence is present", () => {
+    expect(parseTransactionHash("Contract invoked successfully")).toBeNull();
+  });
+
+  it("returns null for a 63-char hex string (one short)", () => {
+    const short = VALID_HASH.slice(0, 63);
+    // 63 hex chars surrounded by word-break chars — should not match
+    expect(parseTransactionHash(` ${short} `)).toBeNull();
+  });
+
+  it("returns null for a 65-char hex string (one long)", () => {
+    const long = VALID_HASH + "f";
+    // 65-char sequence — the \b word boundary breaks differently;
+    // it should not be returned as a valid hash
+    expect(parseTransactionHash(long)).toBeNull();
+  });
+
+  it("returns the first hash when two are present", () => {
+    const hash2 = VALID_HASH.replace(/a/g, "b");
+    const text = `first: ${VALID_HASH} second: ${hash2}`;
+    expect(parseTransactionHash(text)).toBe(VALID_HASH);
+  });
+
+  it("is case-insensitive (returns as-found)", () => {
+    const upper = VALID_HASH.toUpperCase();
+    expect(parseTransactionHash(upper)).toBe(upper);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkPreflightFlags
+// ---------------------------------------------------------------------------
+
+const FAKE_HELP = `
+Usage: stellar contract invoke [OPTIONS] ...
+
+Options:
+      --contract-id <CONTRACT_ID>  [aliases: --id]
+  -s, --source-account <SOURCE_ACCOUNT>  [aliases: --source]
+  -n, --network <NETWORK>
+      --wasm <WASM>
+      --wasm-hash <WASM_HASH>
+      --force
+      --verbose
+  -h, --help  Print help
+`;
+
+describe("checkPreflightFlags", () => {
+  it("returns empty array when all required flags are present", () => {
+    const missing = checkPreflightFlags(FAKE_HELP, ["--id", "--source", "--network"]);
+    expect(missing).toEqual([]);
+  });
+
+  it("returns missing flags when a flag is absent from the help text", () => {
+    const missing = checkPreflightFlags(FAKE_HELP, ["--id", "--no-fund"]);
+    expect(missing).toContain("--no-fund");
+    expect(missing).not.toContain("--id");
+  });
+
+  it("returns all missing flags when none are present", () => {
+    const missing = checkPreflightFlags("Usage: stellar keys generate\n  -h, --help", [
+      "--no-fund",
+      "--auto-submit",
+    ]);
+    expect(missing).toEqual(["--no-fund", "--auto-submit"]);
+  });
+
+  it("returns empty array for an empty required list", () => {
+    expect(checkPreflightFlags(FAKE_HELP, [])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getPreflightSpecs
+// ---------------------------------------------------------------------------
+
+describe("getPreflightSpecs", () => {
+  it("covers all subcommands the harness uses", () => {
+    const specs = getPreflightSpecs();
+    const subCmds = specs.map((s) => s.subcommand.join(" "));
+    expect(subCmds).toContain("keys generate");
+    expect(subCmds).toContain("keys public-key");
+    expect(subCmds).toContain("keys rm");
+    expect(subCmds).toContain("contract build");
+    expect(subCmds).toContain("contract upload");
+    expect(subCmds).toContain("contract deploy");
+    expect(subCmds).toContain("contract invoke");
+  });
+
+  it("requires --force for keys rm", () => {
+    const specs = getPreflightSpecs();
+    const rm = specs.find((s) => s.subcommand.join(" ") === "keys rm");
+    expect(rm?.requiredFlags).toContain("--force");
+  });
+
+  it("does not require --no-fund for keys generate (flag does not exist in 30.0.1)", () => {
+    const specs = getPreflightSpecs();
+    const gen = specs.find((s) => s.subcommand.join(" ") === "keys generate");
+    expect(gen?.requiredFlags).not.toContain("--no-fund");
+  });
+
+  it("requires --wasm for contract upload", () => {
+    const specs = getPreflightSpecs();
+    const upload = specs.find((s) => s.subcommand.join(" ") === "contract upload");
+    expect(upload?.requiredFlags).toContain("--wasm");
+  });
+
+  it("requires --wasm-hash for contract deploy", () => {
+    const specs = getPreflightSpecs();
+    const deploy = specs.find((s) => s.subcommand.join(" ") === "contract deploy");
+    expect(deploy?.requiredFlags).toContain("--wasm-hash");
   });
 });

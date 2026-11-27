@@ -6,3 +6,4 @@ coverage/
 *.d.ts.map
 testnet/last-run.txt
 testnet/contract/target/
+dump.rdb

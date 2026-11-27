@@ -114,3 +114,203 @@ export function checkForbiddenContractId(
   }
   return { configured: true, matched: false };
 }
+
+// ---------------------------------------------------------------------------
+// CLI argument builders
+//
+// Each function returns the exact argv array that stellarExec receives.
+// Having them here makes the preflight checker and unit tests easy to write.
+// ---------------------------------------------------------------------------
+
+/**
+ * Arguments for `stellar keys generate <name>`.
+ *
+ * In stellar 30.0.1 the flag to auto-fund is `--fund` (opt-in).  There is no
+ * `--no-fund` flag; keys are NOT funded unless `--fund` is passed.  The harness
+ * funds accounts via Friendbot itself, so `--fund` is not used.
+ */
+export function argsKeysGenerate(keyName: string): string[] {
+  return ["keys", "generate", keyName];
+}
+
+/**
+ * Arguments for `stellar keys public-key <name>`.
+ *
+ * `keys address` is a documented alias for `keys public-key`; both work in
+ * 30.0.1.  We use the canonical subcommand name in the preflight check.
+ */
+export function argsKeysAddress(keyName: string): string[] {
+  return ["keys", "public-key", keyName];
+}
+
+/**
+ * Arguments for `stellar keys rm --force <name>`.
+ *
+ * `--force` suppresses the interactive confirmation prompt.
+ */
+export function argsKeysRm(keyName: string): string[] {
+  return ["keys", "rm", "--force", keyName];
+}
+
+/**
+ * Arguments for `stellar contract build` (run inside the contract directory).
+ */
+export function argsContractBuild(): string[] {
+  return ["contract", "build"];
+}
+
+/**
+ * Arguments for `stellar contract upload`.
+ *
+ * `contract install` is deprecated in 30.0.1; `contract upload` is the
+ * current name.  `--source` is the documented alias for `--source-account`.
+ */
+export function argsContractUpload(
+  wasmPath: string,
+  sourceKey: string,
+  network: string
+): string[] {
+  return [
+    "contract", "upload",
+    "--wasm", wasmPath,
+    "--source", sourceKey,
+    "--network", network,
+  ];
+}
+
+/**
+ * Arguments for `stellar contract deploy --wasm-hash`.
+ *
+ * `--source` is the documented alias for `--source-account`.
+ */
+export function argsContractDeploy(
+  wasmHash: string,
+  sourceKey: string,
+  network: string
+): string[] {
+  return [
+    "contract", "deploy",
+    "--wasm-hash", wasmHash,
+    "--source", sourceKey,
+    "--network", network,
+  ];
+}
+
+/**
+ * Arguments for `stellar contract invoke`.
+ *
+ * `--id` is the documented alias for `--contract-id`.
+ * `--source` is the documented alias for `--source-account`.
+ * Contract function name and arguments follow `--` as positional args.
+ */
+export function argsContractInvoke(
+  contractId: string,
+  sourceKey: string,
+  network: string,
+  fnName: string,
+  fnArgs: string[]
+): string[] {
+  return [
+    "contract", "invoke",
+    "--id", contractId,
+    "--source", sourceKey,
+    "--network", network,
+    "--",
+    fnName,
+    ...fnArgs,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Transaction-hash extraction
+//
+// stellar contract invoke (30.0.1) does not expose the transaction hash
+// through any documented flag.  The `-v` / `--verbose` flag logs DEBUG events;
+// `--very-verbose` additionally logs TRACE events.  Neither flag is
+// documented to emit a transaction hash.
+//
+// Therefore: the harness does NOT attempt to extract a hash from CLI output.
+// C1's independent hash re-confirmation is SKIPPED with a clear reason.
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempts to parse a 64-character hex transaction hash from a string.
+ *
+ * Returns the first match, or `null` if none is found.
+ *
+ * This function exists for completeness and unit-testing; in practice the
+ * CLI does not emit a transaction hash, so callers should treat `null` as
+ * the expected result and skip any hash-based re-confirmation.
+ */
+export function parseTransactionHash(text: string): string | null {
+  // A Stellar transaction hash is exactly 64 hex characters.
+  const match = text.match(/\b([0-9a-fA-F]{64})\b/);
+  if (!match) return null;
+  // Verify exactly 64 hex chars (the regex already guarantees this, but
+  // be explicit so the contract is testable).
+  return match[1].length === 64 ? match[1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// Preflight checker
+//
+// Verifies that every flag the harness uses is present in the installed CLI's
+// help output.  Runs fully offline (--help works without network).
+// ---------------------------------------------------------------------------
+
+export interface PreflightSpec {
+  /** The subcommand string passed to `stellar --help`, e.g. ["keys","generate"] */
+  subcommand: string[];
+  /** Exact flag strings the harness passes, e.g. ["--source", "--network"] */
+  requiredFlags: string[];
+}
+
+/**
+ * Returns the list of PreflightSpec entries that the harness depends on.
+ * Keeping them here (rather than inline in run.mjs) makes them unit-testable.
+ */
+export function getPreflightSpecs(): PreflightSpec[] {
+  return [
+    {
+      subcommand: ["keys", "generate"],
+      requiredFlags: [],   // no special flags used (just <name>)
+    },
+    {
+      subcommand: ["keys", "public-key"],
+      requiredFlags: [],   // just <name>
+    },
+    {
+      subcommand: ["keys", "rm"],
+      requiredFlags: ["--force"],
+    },
+    {
+      subcommand: ["contract", "build"],
+      requiredFlags: [],   // no extra flags in harness call
+    },
+    {
+      subcommand: ["contract", "upload"],
+      requiredFlags: ["--wasm", "--source", "--network"],
+    },
+    {
+      subcommand: ["contract", "deploy"],
+      requiredFlags: ["--wasm-hash", "--source", "--network"],
+    },
+    {
+      subcommand: ["contract", "invoke"],
+      requiredFlags: ["--id", "--source", "--network"],
+    },
+  ];
+}
+
+/**
+ * Checks whether every required flag appears in a help text string.
+ *
+ * Returns an array of flags that are missing.  An empty array means all flags
+ * are present and the check passes.
+ */
+export function checkPreflightFlags(
+  helpText: string,
+  requiredFlags: string[]
+): string[] {
+  return requiredFlags.filter((flag) => !helpText.includes(flag));
+}

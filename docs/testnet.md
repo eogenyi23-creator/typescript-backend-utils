@@ -86,6 +86,42 @@ pair. No testnet connection is made for check E.
 
 ---
 
+## Preflight check
+
+Before running the harness against the network, verify that every CLI flag the
+harness uses is supported by the installed `stellar` CLI version:
+
+```sh
+npm run testnet:preflight
+```
+
+This command is offline: it runs `stellar <subcommand> --help` for each
+subcommand and checks that the flags the harness passes appear in the help text.
+It exits non-zero and prints a list of unsupported flags if any are missing.
+Run this first after updating the stellar CLI.
+
+---
+
+## Key store hygiene
+
+The harness generates throwaway keypairs on every run using
+`stellar keys generate`.  The stellar CLI stores these identities on disk under
+its configuration directory (usually `~/.config/stellar/identity/`).  All
+harness identity names start with `harness-`.
+
+The harness removes every identity it created in a `finally` block after all
+checks complete, even if the run fails.  If a run is killed before cleanup:
+
+```sh
+# List any leftover harness identities
+stellar keys ls | grep harness-
+
+# Remove each one
+stellar keys rm --force harness-<name>
+```
+
+---
+
 ## Commands (in order)
 
 ```sh
@@ -102,13 +138,16 @@ rustup target add wasm32v1-none
 npm ci
 npm run build
 
-# 4. Run the harness (builds harness helpers automatically, then runs)
+# 4. Run the preflight check (offline — verifies every CLI flag before touching the network)
+npm run testnet:preflight
+
+# 5. Run the harness (builds harness helpers automatically, then runs)
 npm run testnet
 
-# 4a. With Redis
+# 5a. With Redis
 REDIS_URL=redis://localhost:6379 npm run testnet
 
-# 4b. With Redis and foreign-contract-ID safety check
+# 5b. With Redis and foreign-contract-ID safety check
 REDIS_URL=redis://localhost:6379 FORBIDDEN_CONTRACT_IDS=C...,C... npm run testnet
 ```
 
@@ -180,6 +219,7 @@ WASM present: .../kv_test.wasm ✓
 | Failure | Likely cause |
 |---------|-------------|
 | `stellar CLI not found` | Install the stellar CLI first |
+| `Preflight FAILED — unsupported flags` | The installed stellar CLI version does not support a flag the harness uses; update the CLI or the harness |
 | Friendbot returns 400 | Testnet is experiencing issues; retry later |
 | `SAFETY STOP: deployed contract ID matches an entry in FORBIDDEN_CONTRACT_IDS` | The deployed ID matched one of your known foreign IDs; check network and account |
 | A1 FAIL (hash mismatch) | The WASM binary changed between the build and upload steps |

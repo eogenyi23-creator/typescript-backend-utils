@@ -9,6 +9,112 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/harness-cli-flags (Task 1: audit and fix every stellar CLI call)
+
+#### Changes
+- **`testnet/run.mjs`** — complete rewrite of all stellar CLI call sites:
+  - `keys generate`: removed `--no-fund` (does not exist in 30.0.1; the flag
+    is `--fund` and is opt-in; harness funds via Friendbot so neither is used).
+  - `keys address` → `keys public-key` (canonical subcommand; `address` is an
+    alias and still works, but we use the canonical form for preflight clarity).
+  - Added `stellar keys rm --force` calls in a `finally` block so every
+    harness-created identity is removed from the CLI's key store after the run
+    (or on error/kill).  Key names start with `harness-`.
+  - `contract install` → `contract upload` (`install` is deprecated in 30.0.1).
+  - `--source` alias for `--source-account` confirmed valid on `upload`, `deploy`,
+    and `invoke`; kept as-is.
+  - `--id` alias for `--contract-id` confirmed valid on `invoke`; kept.
+  - `--network` confirmed valid on all network-touching subcommands; kept.
+  - `contract invoke` transaction hash: stellar CLI 30.0.1 does not expose the
+    transaction hash through any documented flag (`-v`/`--verbose` = DEBUG log
+    events only; `--very-verbose` = TRACE; neither documents a hash in its
+    output).  The hash extraction attempt and "best-effort" comment are removed.
+    C1's hash re-confirmation is now honestly marked SKIPPED when no hash is
+    available from the CLI, with a clear reason in the log.
+  - Each CLI call is in its own named function (`stellarKeysGenerate`,
+    `stellarKeysAddress`, `stellarKeysRm`, `stellarContractBuild`,
+    `stellarContractUpload`, `stellarContractDeploy`, `stellarContractInvoke`).
+  - Added `--preflight` mode: runs every subcommand's `--help` offline and
+    verifies all required flags are present; exits non-zero with a clear list
+    if anything is missing.  Invoked via `npm run testnet:preflight`.
+- **`testnet/helpers.ts`** — added pure exports:
+  - `argsKeysGenerate`, `argsKeysAddress`, `argsKeysRm`, `argsContractBuild`,
+    `argsContractUpload`, `argsContractDeploy`, `argsContractInvoke` — argument
+    builders returning the exact argv array for each CLI call.
+  - `parseTransactionHash(text)` — extracts a 64-char hex hash from a string,
+    or returns null; used by the harness but expected to return null since the
+    CLI does not emit a hash.
+  - `getPreflightSpecs()` — returns the list of subcommands and required flags
+    for the preflight checker.
+  - `checkPreflightFlags(helpText, requiredFlags)` — returns missing flags.
+- **`package.json`** — added `"testnet:preflight"` script.
+- **`tests/harnessHelpers.test.ts`** — added 25 new tests covering: all argument
+  builders (verify correct subcommand names and flags, confirm --no-fund absent),
+  `parseTransactionHash` (valid, embedded, empty, no match, 63-char, 65-char,
+  two hashes, uppercase), `checkPreflightFlags` (all present, some missing, all
+  missing, empty required list), `getPreflightSpecs` (subcommand coverage, --force
+  on rm, --no-fund absent from generate, --wasm on upload, --wasm-hash on deploy).
+- **`docs/testnet.md`** — added "Preflight check" and "Key store hygiene"
+  sections; updated commands to show `testnet:preflight` as step 4; added
+  preflight failure row to the troubleshooting table.
+
+#### Why
+The first real run against the testnet failed immediately because
+`stellar keys generate --no-fund` is not a valid flag in 30.0.1 (the flag is
+`--fund`, opt-in).  An audit of every other CLI call found that `contract install`
+is deprecated (use `contract upload`), and that `--verbose` / `--very-verbose`
+does not emit a transaction hash in any documented format.  The hash extraction
+was quietly failing (returning null) but the comment still claimed it was
+"best-effort" — which was misleading.  The fix makes the harness honest about
+what the CLI provides and verifiable offline before every run.
+
+#### Verification
+Audit table (stellar 30.0.1):
+
+| Call site | Command as written | Valid 30.0.1 | Correction |
+|---|---|---|---|
+| `generateAndFundKeypair` | `keys generate --no-fund --network testnet <name>` | **No** | Remove `--no-fund`; no `--network` needed for generate |
+| `generateAndFundKeypair` | `keys address <name>` | Yes (alias) | Changed to `keys public-key` (canonical) |
+| (new) cleanup | (absent) | N/A | Added `keys rm --force <name>` in finally block |
+| `deployContract` | `contract install --wasm … --source … --network …` | Deprecated | Changed to `contract upload` |
+| `deployContract` | `contract deploy --wasm-hash … --source … --network …` | Yes | Unchanged |
+| `checkB_contractCache` / `checkC_transactionBatcher` | `contract invoke --id … --source … --network … -- fn args` | Yes | Unchanged |
+| `invokeAndConfirm` | `--verbose` for hash extraction | No hash in output | Removed; hash re-check marked SKIPPED |
+
+```
+npm run lint                    → exit 0
+npm run build                   → exit 0
+npm run build:testnet           → exit 0
+npm run testnet:preflight       → exit 0 (see output below)
+npm test -- --testPathIgnorePatterns="tests/integration"
+  → 180 passed, 0 failed (25 new tests)
+npm run check:examples          → exit 0
+npm run check:readme-examples   → all 5 snippet(s) matched. ✓
+npm run check:claims            → 46 rows validated. ✓
+```
+
+`npm run testnet:preflight` output:
+```
+══════════════════════════════════════════════════════════════
+  soroban-ts-sdk testnet harness — preflight check
+══════════════════════════════════════════════════════════════
+  stellar CLI: stellar 30.0.1 (f2a7b74175c34585f3b30a1abf42a2d41cbcc390)
+
+  ✓ stellar keys generate: (no extra flags)
+  ✓ stellar keys public-key: (no extra flags)
+  ✓ stellar keys rm: --force
+  ✓ stellar contract build: (no extra flags)
+  ✓ stellar contract upload: --wasm, --source, --network
+  ✓ stellar contract deploy: --wasm-hash, --source, --network
+  ✓ stellar contract invoke: --id, --source, --network
+
+Preflight passed — all flags verified against installed CLI ✓
+```
+
+#### Limits
+Live end-to-end harness run not executed — requires testnet network access and
+funded keypairs; awaiting owner execution.  The preflight passes offline.
+
 ### 2026-11-27 — fix/build-output-path (Task 1: restore package build output path and guard in CI)
 
 #### Changes

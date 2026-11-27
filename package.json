@@ -25,7 +25,8 @@
     "check:readme-examples": "node scripts/check-readme-examples.mjs",
     "check:claims": "node scripts/check-claims.mjs",
     "prepublishOnly": "npm run build",
-    "testnet": "npm run build:testnet && node testnet/run.mjs"
+    "testnet": "npm run build:testnet && node testnet/run.mjs",
+    "testnet:preflight": "npm run build:testnet && node testnet/run.mjs --preflight"
   },
   "keywords": [
     "stellar",
