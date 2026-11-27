@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "paths": {
+      "soroban-ts-sdk": ["./src/index.ts"]
+    }
+  },
+  "include": ["examples/**/*", "src/**/*"]
+}

@@ -9,6 +9,54 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/verify-and-readme (Task 2: Make every README example compile against the real API)
+
+#### Changes
+- Created `examples/` with one file per module (`contract-cache.ts`, `rpc-rate-limiter.ts`,
+  `transaction-batcher.ts`, `horizon-event-handler.ts`, `wasm-pipeline.ts`).
+- Added `tsconfig.examples.json` with a `paths` alias so examples import from
+  `soroban-ts-sdk` exactly as a consumer would, resolved to `./src/index.ts` during
+  type-checking.
+- Added npm scripts: `check:examples` (`tsc --project tsconfig.examples.json`),
+  `check:readme-examples` (`node scripts/check-readme-examples.mjs`),
+  `test:coverage`, `test:integration`.
+- Added `scripts/check-readme-examples.mjs`: reads `<!-- example: <name> -->` markers in
+  the README and asserts each following fenced TypeScript block appears verbatim in
+  `examples/<name>.ts`. Fails if no markers are found, an example file is missing,
+  or the snippet is not found.
+- Updated `.github/workflows/ci.yml` to run `check:examples`, `check:readme-examples`,
+  and `test:coverage` after the build step.
+- Rewrote the five README Quick Start snippets to match the real exported API.
+
+#### Why (errors in the original README)
+1. `SorobanRpc.Server` / `SorobanRpc.Durability` — `SorobanRpc` is not exported by
+   `@stellar/stellar-sdk` v13.x. The correct namespace is `rpc`.
+2. `new Address(userAddress)` — `Address` was used without being imported.
+3. `cache.getOrFetch(contractId, 'balance', [new Address(...)], (key) => ...)` — wrong
+   call signature. The real signature is `getOrFetch(key: ContractStateKey, fetch: () =>
+   Promise<SorobanEntryResult<T>>)`: two arguments, not four.
+4. `RpcRateLimiter.create('soroban-rpc', redis, { maxTokens, refillRate, windowSeconds })` —
+   the third argument is a tier string (`'public'` | `'authenticated'`), not a config
+   object. Config overrides go in the fourth argument.
+5. `batcher.submit(txEnvelopes, fn)` — `submit` does not exist. The method is
+   `submitWithResults(tasks)` where `tasks` is an array of `() => Promise<T>` functions,
+   not raw transaction envelopes.
+
+#### Verification
+```
+npm run check:examples      → exit 0 (5 files type-checked with tsc --noEmit)
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run lint                → exit 0
+npm run build               → exit 0
+npm test                    → 99 tests, 5 suites, all passing
+```
+
+#### Limits
+Examples are type-checked only (`--noEmit`). They do not run against a real Stellar
+network or Redis instance. `wasm-pipeline.ts` is not executed (no `.wasm` file present).
+
+---
+
 ### 2026-11-27 — fix/verify-and-readme (Task 1: Baseline audit)
 
 #### Changes

@@ -1,6 +1,6 @@
 # typescript-backend-utils
 
-> Production-ready TypeScript building blocks for the parts of Stellar/Soroban backend development that every serious project ends up rebuilding from scratch.
+> TypeScript building blocks for Stellar/Soroban backend development: contract state cache, RPC rate limiter, transaction batcher, Horizon event handler, and WASM upload pipeline.
 
 [![CI](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml/badge.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/eogenyi23-creator/typescript-backend-utils/blob/main/LICENSE) [![Stellar](https://img.shields.io/badge/Stellar-Soroban-blue)](https://developers.stellar.org/docs/smart-contracts)
 
@@ -48,63 +48,88 @@ npm install @stellar/stellar-sdk ioredis
 
 ### Contract State Cache
 
-Avoid hammering your RPC node with repeated `getContractData` calls on the same key:
+Avoid hammering your RPC node with repeated `getContractData` calls on the same key.
+`getOrFetch` takes a `{ contractId, storageKey }` object and a fetch callback that
+returns a `SorobanEntryResult` with the `liveUntilLedgerSeq` and `durability` fields
+from the RPC response:
 
+<!-- example: contract-cache -->
 ```typescript
 import { ContractCache } from 'soroban-ts-sdk';
-import { Contract, SorobanRpc } from '@stellar/stellar-sdk';
+import { rpc } from '@stellar/stellar-sdk';
 
-const server = new SorobanRpc.Server('https://soroban-testnet.stellar.org');
-const cache = new ContractCache({ maxSize: 500, defaultTtlLedgers: 5 });
+const server = new rpc.Server('https://soroban-testnet.stellar.org');
+const cache = new ContractCache({ maxSize: 500 });
+
+const contractId = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+const userAddress = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN';
 
 const balance = await cache.getOrFetch(
-  contractId,
-  'balance',
-  [new Address(userAddress)],
-  (key) => server.getContractData(contractId, key, SorobanRpc.Durability.Persistent)
+  { contractId, storageKey: `balance:${userAddress}` },
+  async () => {
+    const latestLedger = await server.getLatestLedger();
+    return {
+      value: { amount: 0 },
+      liveUntilLedgerSeq: latestLedger.sequence + 100,
+      durability: 'persistent' as const,
+      fetchedAtLedger: latestLedger.sequence,
+    };
+  }
 );
+
+void balance;
 ```
 
 ### RPC Rate Limiter
 
-Respect Stellar RPC and Horizon rate limits without dropping requests:
+Respect Stellar RPC and Horizon rate limits without dropping requests.
+`RpcRateLimiter.create` takes the endpoint name, a Redis client, a tier string
+(`'public'` or `'authenticated'`), and an optional config override:
 
+<!-- example: rpc-rate-limiter -->
 ```typescript
 import { RpcRateLimiter } from 'soroban-ts-sdk';
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 
 const redis = new Redis();
-const limiter = RpcRateLimiter.create('soroban-rpc', redis, {
+const limiter = RpcRateLimiter.create('soroban-rpc', redis, 'public', {
   maxTokens: 100,
   refillRate: 100 / 60,
   windowSeconds: 60,
 });
 
-app.use('/rpc', limiter.middleware());
+// app.use('/rpc', limiter.middleware());
+void limiter;
 ```
 
 ### Transaction Batcher
 
-Submit multiple Soroban transactions concurrently with automatic retry:
+Submit multiple Soroban transactions concurrently with automatic retry.
+Each task is a zero-argument async function. Use `submitWithResults` to get
+typed `fulfilled` and `rejected` buckets:
 
+<!-- example: transaction-batcher -->
 ```typescript
 import { TransactionBatcher } from 'soroban-ts-sdk';
+import type { rpc } from '@stellar/stellar-sdk';
 
-const batcher = new TransactionBatcher({
+const batcher = new TransactionBatcher<rpc.Api.SendTransactionResponse>({
   maxConcurrency: 5,
   batchSize: 10,
   retryInterval: 1000,
   maxRetries: 3,
 });
 
-const txEnvelopes = [...];
-const results = await batcher.submit(txEnvelopes, (xdr) =>
-  server.sendTransaction(xdr)
-);
+// Each task is a zero-argument async function that submits one transaction.
+const tasks: Array<() => Promise<rpc.Api.SendTransactionResponse>> = [];
 
-results.forEach((r) => {
-  if (r.status === 'fulfilled') console.log('hash:', r.result.hash);
-  else console.error('failed:', r.error.message);
+const { fulfilled, rejected } = await batcher.submitWithResults(tasks);
+
+fulfilled.forEach((r) => {
+  console.log('hash:', r.result.hash);
+});
+rejected.forEach((r) => {
+  console.error('failed:', r.error.message);
 });
 ```
 
@@ -112,25 +137,28 @@ results.forEach((r) => {
 
 Process Stellar Horizon payment, ledger, and contract events with idempotency:
 
+<!-- example: horizon-event-handler -->
 ```typescript
 import { HorizonEventHandler } from 'soroban-ts-sdk';
 
 const handler = HorizonEventHandler.create({
-  secret: process.env.HORIZON_WEBHOOK_SECRET!,
+  secret: process.env['HORIZON_WEBHOOK_SECRET'] ?? 'dev-secret',
   onEvent: async (event) => {
     if (event.type === 'payment') {
-      await processPayment(event);
+      console.log('processing payment:', event.id);
     }
   },
 });
 
-app.post('/horizon/events', handler.middleware());
+// app.post('/horizon/events', handler.middleware());
+void handler;
 ```
 
 ### WASM Upload Pipeline
 
 Hash, validate, and prepare a Soroban contract WASM before deploying:
 
+<!-- example: wasm-pipeline -->
 ```typescript
 import { WasmPipeline } from 'soroban-ts-sdk';
 
@@ -153,6 +181,12 @@ typescript-backend-utils/
 │   ├── horizonEventHandler.ts  # Horizon streaming event handler
 │   ├── wasmPipeline.ts         # WASM streaming hash + validation pipeline
 │   └── index.ts                # Barrel export
+├── examples/
+│   ├── contract-cache.ts
+│   ├── rpc-rate-limiter.ts
+│   ├── transaction-batcher.ts
+│   ├── horizon-event-handler.ts
+│   └── wasm-pipeline.ts
 ├── tests/
 │   ├── contractCache.test.ts
 │   ├── rpcRateLimiter.test.ts
@@ -163,6 +197,7 @@ typescript-backend-utils/
 │   └── ci.yml                  # Build + test on every push/PR
 ├── package.json
 ├── tsconfig.json
+├── tsconfig.examples.json
 ├── CONTRIBUTING.md
 └── SECURITY.md
 ```
@@ -193,6 +228,12 @@ npm run build
 
 ```bash
 npm test
+```
+
+### Type-check examples
+
+```bash
+npm run check:examples
 ```
 
 ### Lint

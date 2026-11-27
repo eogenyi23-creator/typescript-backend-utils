@@ -34,5 +34,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Type-check examples
+        run: npm run check:examples
+
+      - name: Check README examples match example files
+        run: npm run check:readme-examples
+
       - name: Run tests
         run: npm test
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
