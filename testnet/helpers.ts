@@ -8,6 +8,89 @@
  *     without touching the network
  */
 
+// ---------------------------------------------------------------------------
+// Mock request / response builder (used by check D)
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal mock HTTP response that records the status code set by
+ * `res.status(code)`, the body passed to `res.end(body)`, and all headers.
+ * Supports the fluent `res.status(code).end(body)` chaining used by the
+ * rate-limiter middleware.
+ */
+export interface MockResponse {
+  statusCode: number;
+  endBody: string | undefined;
+  headers: Record<string, string | number>;
+  status(code: number): MockResponse;
+  setHeader(name: string, value: string | number): void;
+  end(body?: string): void;
+  json(body: unknown): MockResponse;
+}
+
+export interface MockRequest {
+  headers: Record<string, string | undefined>;
+  ip?: string;
+  socket?: { remoteAddress?: string };
+}
+
+export interface MockReqRes {
+  req: MockRequest;
+  res: MockResponse;
+  next: () => void;
+  /** True only if `next()` was called (i.e. the request was allowed through). */
+  isAllowed: () => boolean;
+}
+
+/**
+ * Builds a minimal mock request/response pair for use with the rate-limiter
+ * middleware in check D.
+ *
+ * The response captures:
+ * - `statusCode` — set by `res.status(code)`; defaults to 200
+ * - `endBody`    — the string passed to `res.end(body)`, or `undefined` if not called
+ * - `headers`    — all names/values passed to `res.setHeader()`
+ *
+ * `isAllowed()` returns `true` if and only if `next()` was called, which is
+ * what the rate-limiter does when it allows the request through.
+ */
+export function makeMockReqRes(ip: string): MockReqRes {
+  const req: MockRequest = {
+    headers: {},
+    ip,
+    socket: { remoteAddress: ip },
+  };
+
+  let _nextCalled = false;
+  const _headers: Record<string, string | number> = {};
+
+  const res: MockResponse = {
+    statusCode: 200,
+    endBody: undefined,
+    headers: _headers,
+    status(code: number): MockResponse {
+      this.statusCode = code;
+      return this;
+    },
+    setHeader(name: string, value: string | number): void {
+      _headers[name] = value;
+    },
+    end(body?: string): void {
+      this.endBody = body;
+    },
+    json(body: unknown): MockResponse {
+      this.endBody = JSON.stringify(body);
+      return this;
+    },
+  };
+
+  const next = (): void => {
+    _nextCalled = true;
+  };
+
+  return { req, res, next, isAllowed: () => _nextCalled };
+}
+
 export interface CheckResult {
   id: string;
   pass?: boolean;
@@ -313,4 +396,122 @@ export function checkPreflightFlags(
   requiredFlags: string[]
 ): string[] {
   return requiredFlags.filter((flag) => !helpText.includes(flag));
+}
+
+// ---------------------------------------------------------------------------
+// Fail-open detector (check D)
+//
+// The rate limiter fails open on Redis errors: it logs to console.error and
+// calls next(), letting the request through.  A harness that only counts
+// allowed/blocked requests therefore cannot tell a healthy limiter from a
+// broken one — every request is allowed either way.  Check D installs a
+// console.error recorder around the limiter and fails the whole check if any
+// "failing open" message is emitted.
+// ---------------------------------------------------------------------------
+
+/** Marker string the rate limiter includes in every fail-open log line. */
+export const FAIL_OPEN_MARKER = "failing open";
+
+/**
+ * Result of a fail-open scan.
+ *
+ * - `failedOpen === false` — no fail-open message was recorded
+ * - `failedOpen === true`  — `firstMessage` holds the first recorded
+ *   console.error line that contains the fail-open marker
+ */
+export interface FailOpenScan {
+  failedOpen: boolean;
+  firstMessage: string | null;
+  /** All recorded console.error lines (for diagnostics). */
+  messages: string[];
+}
+
+/**
+ * Scans recorded console.error lines for the fail-open marker.
+ *
+ * @param messages - every console.error line captured during the check
+ */
+export function scanForFailOpen(messages: string[]): FailOpenScan {
+  const hits = messages.filter((m) => m.includes(FAIL_OPEN_MARKER));
+  return {
+    failedOpen: hits.length > 0,
+    firstMessage: hits.length > 0 ? hits[0] : null,
+    messages,
+  };
+}
+
+/**
+ * Creates a recorder that wraps `console.error` (or a provided target function)
+ * and collects every call as a single string.  Returns an object with the
+ * collected messages and a `restore()` that reinstates the original.
+ *
+ * `restore()` must be called in a finally block so the real console.error is
+ * never left wrapped.
+ */
+export function wrapConsoleError(): {
+  messages: string[];
+  restore: () => void;
+} {
+  const original = console.error;
+  const messages: string[] = [];
+  console.error = (...args: unknown[]) => {
+    messages.push(args.map((a) => String(a)).join(" "));
+  };
+  return {
+    messages,
+    restore: () => {
+      console.error = original;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// RpcRateLimiter tier config accessor (check D)
+//
+// The harness must use the real public-tier maxTokens value, not a copy of it.
+// Importing TIER_CONFIGS from src would drag the compiled library into the
+// helpers' unit-test path, so check D reads the value at run time from the
+// built module (see run.mjs).  The pure pieces below — bucket-key derivation
+// and tier-config extraction — are unit-testable without Redis.
+// ---------------------------------------------------------------------------
+
+/**
+ * Derives the Redis bucket key exactly as the library does.
+ *
+ * Key layout in src/rpcRateLimiter.ts:
+ *   `rl:${endpoint}:${tier}:${identifier}`
+ *
+ * and the identifier is chosen by resolveIdentifier():
+ *   trustProxy ? leftmost X-Forwarded-For entry
+ *              : req.ip ?? req.socket.remoteAddress ?? "unknown"
+ *
+ * This function mirrors that logic for a request that is not behind a proxy.
+ */
+export function deriveBucketKey(
+  endpoint: string,
+  tier: string,
+  identifier: string
+): string {
+  return `rl:${endpoint}:${tier}:${identifier}`;
+}
+
+/**
+ * Extracts the resolved maxTokens for a tier from a `TIER_CONFIGS`-shaped
+ * object merged with an optional partial override.
+ *
+ * The library resolves `{ ...TIER_CONFIGS[tier], ...config }`; this mirrors it.
+ */
+export function resolveMaxTokens(
+  tierConfigs: Record<string, { maxTokens: number }>,
+  tier: string,
+  config?: { maxTokens?: number }
+): number {
+  const base = tierConfigs[tier]?.maxTokens;
+  if (config && typeof config.maxTokens === "number") {
+    return config.maxTokens;
+  }
+  if (typeof base === "number") {
+    return base;
+  }
+  throw new Error(`Unknown tier "${tier}" and no maxTokens override provided`);
 }

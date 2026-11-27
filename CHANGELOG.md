@@ -9,7 +9,169 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### 2026-11-27 — fix/redis-test-stability (Task 1: make Redis integration tests deterministic)
+### 2026-11-27 — fix/harness-check-d (Task 1: rewrite check D so it cannot pass by failing open)
+
+#### Changes
+- **`testnet/run.mjs`** — `checkD_rpcRateLimiter` completely rewritten.  Four bugs fixed:
+  1. Factory called as `createRpcRateLimiter({ redis, tier })` (wrong signature) —
+     now called as `createRpcRateLimiter(endpoint, tier, redis, config?, options?)`
+     with a unique endpoint per run (`harness-d-<ts>-<random>`).  Before the fix the
+     endpoint resolved to `[object Object]`, `redis` was `undefined`, every request
+     threw, and the limiter failed open on all 65 requests (that was the D1 FAIL).
+  2. Bucket key built as `rrl:<endpoint>:public:<ip>` — now derived exactly as the
+     library does: `rl:${endpoint}:${tier}:${identifier}` (via
+     `deriveBucketKey`, mirroring `resolveIdentifier`), and verified with `SCAN`
+     on the unique endpoint prefix plus an `EXISTS` assertion so the harness
+     proves the limiter really executed the Lua script against Redis.
+  3. Mock response lacked `end(body)` — `res.status(429).end(...)` previously threw
+     inside the middleware's `try`, triggering fail-open.  The mock now records
+     `statusCode` and `endBody`, so every block is asserted to be a real 429 with
+     a JSON body.
+  4. D2 was a fake pass (it only checked "allowed after `redis.del`", which is
+     trivially true when the limiter fails open).  Replaced with a real refill
+     test: custom config `maxTokens: 5, refillRate: 5.0, windowSeconds: 60`
+     (field names read from `RpcRateLimiterConfig`), 5 allowed + 6th blocked
+     with 429, wait 1.2 s, then a request is allowed again.
+  - New **D3**: two separately created limiter instances for the same endpoint
+    share one Redis bucket (30 requests through each, then the next through
+    either instance is blocked).
+  - **Fail-open guard**: `console.error` is wrapped for the whole check; if any
+    line containing `failing open` is recorded, every D sub-check is marked FAIL
+    with `limiter failed open: <first error>` and the recorded message is
+    printed once.  Restored in a `finally` block; Redis client closed via
+    `quit()` in the same `finally`.
+  - Real `public`-tier `maxTokens` is read at runtime from the
+    `X-RateLimit-Limit` header the library sets (never hard-coded); the check
+    sends `maxTokens + 5` sequential requests and expects exactly `maxTokens`
+    allowed and 5 blocked.
+  - Unique mock IP per sub-check so buckets do not interfere.
+  - Keys created by the check are deleted at the end (plus any stray key with
+    the run's unique endpoint prefix, found via `SCAN`).
+  - New `--only D` CLI option runs just check D (no Stellar network, no
+    contract deployment) for quick Redis-only verification.
+
+#### Why
+The first real run (16 PASS, 1 FAIL) failed D1 because of the four bugs above.
+D2's PASS was false: the limiter was failing open on every request and letting
+everything through, so "allowed after bucket reset" was measuring the fail-open
+path, not the limiter.  A limiter that fails open makes a broken setup look
+healthy — every request is allowed either way — so the harness now asserts the
+bucket exists in Redis and fails loudly if any fail-open message is emitted.
+
+#### Verification
+```
+npm run lint                     → exit 0
+npm run build                    → exit 0
+npm run build:testnet            → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 202 passed, 0 failed
+npm run check:examples           → exit 0
+npm run check:readme-examples    → all 5 snippet(s) matched. ✓
+npm run check:claims             → 46 rows validated. ✓
+npm run testnet:preflight        → exit 0 (all flags verified)
+
+REDIS_URL=redis://localhost:6379 node testnet/run.mjs --only D
+  D1 PASS  allowed=60 blocked=5 (public tier, real maxTokens=60);
+           all 5 blocks returned status 429 with a body;
+           bucket EXISTS=1 for rl:harness-d-<ts>-<rand>:public:10.1.<rand>.<rand>;
+           SCAN found the derived key
+  D2 PASS  real refill: 5 allowed, 6th blocked (429),
+           request allowed again 1.2 s later (refillRate 5 tokens/s)
+  D3 PASS  two instances share one bucket: 30 via A + 30 via B (maxTokens=60);
+           next request blocked (429); bucket EXISTS=1
+  3 passed   0 failed   0 skipped
+```
+
+#### Limits
+The live D run was against a local Redis 7 (started on localhost:6379 for the
+run).  No changes to `src/`.  Full harness runs (A–E against the Stellar
+testnet) were not executed in this task; check D was run standalone via
+`--only D`.
+
+### 2026-11-27 — fix/harness-check-d (Task 2: print full evidence for check C and the deployment)
+
+#### Changes
+- **`testnet/run.mjs`** — check C now prints the full 64-character transaction
+  hash for every re-confirmed transaction (previously truncated to 12 chars)
+  plus the explorer link
+  `https://stellar.expert/explorer/testnet/tx/<hash>` on its own line.  The
+  deployment section prints the deployed contract's explorer link
+  (`https://stellar.expert/explorer/testnet/contract/<id>`), and the summary
+  prints the full contract ID, contract explorer link, and full WASM hash.
+  All of these flow through `log()`, so they are included in
+  `testnet/last-run.txt`.  No behaviour change otherwise.
+- `STELLAR_EXPERT_BASE` constant added for the transaction-link prefix.
+
+#### Why
+Truncated hashes and missing links made the recorded evidence unverifiable by
+hand; a reviewer could not paste the hash into an explorer.  The full hash,
+full WASM hash, and contract/transaction explorer links make every recorded
+claim independently checkable.
+
+#### Verification
+`npm run lint` / `npm run build` / `npm run build:testnet` → exit 0.  The C
+re-confirmation lines only execute on a live testnet run (hashes are emitted by
+the CLI in some environments); the change is a print-formatting change verified
+by code inspection and the `--only D` run exercising the shared `log()` path.
+
+#### Limits
+No live testnet run was executed in this task, so the full-hash lines have not
+been observed in real output yet; they will appear in the next full harness
+run recorded in `testnet/last-run.txt`.
+
+### 2026-11-27 — fix/harness-check-d (Task 3: unit tests and docs)
+
+#### Changes
+- **`testnet/helpers.ts`** — new pure exports:
+  - `makeMockReqRes(ip)` — mock request/response builder; the response records
+    `statusCode`, `endBody`, and all `setHeader` values, and supports the
+    fluent `status().end()` chain the middleware uses.  `isAllowed()` returns
+    true iff `next()` was called.
+  - `scanForFailOpen(messages)` / `FAIL_OPEN_MARKER` — fail-open detector over
+    recorded `console.error` lines.
+  - `wrapConsoleError()` — installs a `console.error` recorder and returns
+    `restore()`; must be used with try/finally.
+  - `deriveBucketKey(endpoint, tier, identifier)` — mirrors the library's
+    `rl:${endpoint}:${tier}:${identifier}` key layout.
+  - `resolveMaxTokens(tierConfigs, tier, config?)` — mirrors the library's
+    `{ ...TIER_CONFIGS[tier], ...config }` merge.
+- **`tests/harnessHelpers.test.ts`** — 22 new unit tests: `makeMockReqRes`
+  (status recording, fluent chaining, `end`/`json` body capture, header
+  recording, per-instance `next` state), `scanForFailOpen` (empty, no marker,
+  marker present, first-match priority, messages passthrough),
+  `wrapConsoleError` (capture + restore, no forwarding to the wrapped
+  original), `deriveBucketKey` (layout and order), `resolveMaxTokens`
+  (base, override, unknown tier, override rescue).
+- **`docs/testnet.md`** — check D table rows rewritten for D1/D2/D3 (what each
+  asserts and the fail-open guard); new "Findings" section documenting the
+  first real run's harness mistake and why a limiter which fails open can make
+  a broken setup look healthy (hence the Redis `EXISTS` assertion); two new
+  troubleshooting rows for fail-open failures.
+- **`docs/claims-audit.md`** — live-evidence row L2 updated to reference
+  D1–D3.  Every live-evidence row remains `not yet run`; a later part records
+  the final run.
+
+#### Why
+The mock builder and the fail-open detector are the two pieces of logic that
+make check D trustworthy; both needed unit coverage so a regression cannot
+silently reintroduce the false pass.  The docs now explain exactly what D
+asserts, including the fail-open guard, and record the finding that motivated it.
+
+#### Verification
+```
+npm run lint                     → exit 0
+npm run build                    → exit 0
+npm run build:testnet            → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 202 passed, 0 failed
+npm run check:examples           → exit 0
+npm run check:readme-examples    → all 5 snippet(s) matched. ✓
+npm run check:claims             → 46 rows validated. ✓
+npm run testnet:preflight        → exit 0
+REDIS_URL=redis://localhost:6379 node testnet/run.mjs --only D → 3 passed, 0 failed
+```
+
+#### Limits
+`src/` unchanged.  Live-evidence rows stay `not yet run` until the final
+full harness run is recorded by a later part.
 
 #### Changes
 - **`tests/integration/redis.test.ts`** — complete rewrite of the six integration
