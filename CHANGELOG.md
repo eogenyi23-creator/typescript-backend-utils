@@ -9,6 +9,112 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/harness-corrections (Task 1: remove foreign contract IDs from committed file)
+
+#### Changes
+- **`testnet/run.mjs`** — `assertNotForeignContract` no longer contains a
+  hard-coded list of foreign contract IDs.  It now reads an optional
+  `FORBIDDEN_CONTRACT_IDS` environment variable (comma-separated list supplied
+  by the operator at runtime; never committed).  If set and the deployed ID
+  matches any entry, the same `SAFETY STOP` error is thrown.  If not set, it
+  prints: `Contract-ID safety check: not configured (set FORBIDDEN_CONTRACT_IDS
+  to enable)`.  The function now delegates to `checkForbiddenContractId` from
+  `testnet/helpers.ts`, and imports `checkForbiddenContractId` and
+  `isTerminalStatus` from `dist/testnet/helpers.js` at startup via a top-level
+  dynamic import.
+- **`testnet/helpers.ts`** — added two new exports:
+  - `checkForbiddenContractId(contractId, env)`: pure function that parses
+    `FORBIDDEN_CONTRACT_IDS` from the env map and checks for a match.  Returns a
+    discriminated-union result so callers can log and act without coupling to the
+    error message.
+  - `isTerminalStatus(status)`: pure predicate used by `pollTransaction` (see
+    Task 2).
+- **`tests/harnessHelpers.test.ts`** — added 13 new tests: 6 for
+  `isTerminalStatus` (SUCCESS true, FAILED true, NOT_FOUND false, PENDING false,
+  undefined false, unrecognised false) and 7 for `checkForbiddenContractId`
+  (variable unset, empty string, whitespace-only, no match, exact match, match
+  with extra whitespace, prefix non-match).  All fake IDs in the test file are
+  generated locally (56-char strings starting with `C`) with no connection to any
+  real deployed contract.
+- **`docs/testnet.md`** — added "Contract ID safety check" section at the top;
+  updated the commands example to show `FORBIDDEN_CONTRACT_IDS`; updated the
+  troubleshooting table row to reflect the new error message.
+
+#### Why
+Part 3a merged four real foreign contract IDs into `testnet/run.mjs`.  Those IDs
+belong to other projects and must not appear in this repo.  The fix moves the list
+out of the committed file entirely.
+
+The old IDs remain in earlier commits in git history; they are not rewritten.
+
+#### Verification
+```
+grep -rnE "\bC[A-Z2-7]{55}\b" --exclude-dir=node_modules --exclude-dir=target \
+  --exclude-dir=.git .
+```
+Hits: `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM` in
+`examples/contract-cache.ts`, `README.md`, and six contract test-snapshot files
+(well-known Soroban SDK placeholder, not a foreign deployed ID); and three fake
+IDs (`CAAA…AAA`, `CBBB…BBB`, `CDDD…DDD`) in `tests/harnessHelpers.test.ts`.
+None of the four foreign IDs from Part 3a appear in the working tree.
+
+```
+npm run lint                 → exit 0
+npm run build                → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration"
+  → 155 passed, 0 failed
+npm run check:examples       → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims         → 46 rows validated. ✓
+```
+
+#### Limits
+The old IDs remain in git history (earlier commits on the merged `feat/testnet-harness`
+branch).  Git history is not rewritten.
+
+---
+
+### 2026-11-27 — fix/harness-corrections (Task 2: fix pollTransaction treating NOT_FOUND as terminal)
+
+#### Changes
+- **`testnet/helpers.ts`** — added `isTerminalStatus(status)`: returns `true`
+  only for `"SUCCESS"` and `"FAILED"`.  `"NOT_FOUND"`, `"PENDING"`, `undefined`,
+  and any unrecognised string all return `false`.
+- **`testnet/run.mjs`** — `pollTransaction` now uses `isTerminalStatus` instead
+  of an inline string comparison.  `NOT_FOUND` is no longer treated as a terminal
+  state; the loop continues polling until `SUCCESS` or `FAILED` is received, or
+  the deadline expires.  On timeout, the error message now includes the last
+  status seen (e.g. `last status: NOT_FOUND`).  The variable `lastStatus` is
+  tracked across iterations.  RPC errors still propagate immediately (no
+  `catch { continue }`).
+- Caller at line ~561 (check C1 hash re-confirmation) already only acts on
+  `tx.status === "SUCCESS"` and treats anything else as a failure — no change
+  needed; `pollTransaction` now guarantees it never returns a `NOT_FOUND` result.
+
+#### Why
+On Stellar RPC, `NOT_FOUND` immediately after submission means the node has not
+yet indexed the transaction in a ledger.  Treating it as terminal caused a valid
+transaction to be reported as a false timeout or false failure.  Only `SUCCESS`
+and `FAILED` are permanent outcomes.
+
+#### Verification
+```
+npm run lint                 → exit 0
+npm run build                → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration"
+  → 155 passed, 0 failed
+npm run check:examples       → exit 0
+npm run check:readme-examples → all 5 snippet(s) matched. ✓
+npm run check:claims         → 46 rows validated. ✓
+```
+Live end-to-end harness run: not run — requires testnet access and a funded
+deployer key; awaiting owner execution.
+
+#### Limits
+The polling interval is fixed at 2 s; a very long indexing delay could still
+exhaust the timeout.  The timeout message now names the last status to aid
+diagnosis.
+
 ### 2026-11-27 — feat/testnet-harness (Task 1: kv-test Soroban contract)
 
 #### Changes
