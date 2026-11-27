@@ -9,6 +9,55 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/verify-and-readme (Task 4: Test against real Redis in CI)
+
+#### Changes
+- Created `tests/integration/redis.test.ts` with 6 integration tests for
+  `rpcRateLimiter` and `contractCache`, selected by the `REDIS_URL` env var and
+  skipped (with a clear message) when it is not set.
+  - `rpcRateLimiter` (3 tests): token bucket really limits under concurrent callers;
+    two independent limiter instances share one Redis bucket; fails open when Redis
+    is unreachable.
+  - `contractCache` (3 tests): writes to Redis and back-fills L1 on a fresh cache
+    instance; serves from L1 without hitting Redis on subsequent reads; falls back
+    to L1 when Redis is down.
+- Added npm script `test:integration` (`jest --testPathPattern=tests/integration`).
+- Updated `.github/workflows/ci.yml`:
+  - Existing `build-and-test` job now excludes `tests/integration` from `npm test`
+    and `test:coverage` via `--testPathIgnorePatterns`.
+  - New `integration-tests` job starts a `redis:7` service container, sets
+    `REDIS_URL=redis://localhost:6379`, and runs `npm run test:integration`.
+    The existing unit-test job is fully independent of Redis.
+
+#### Why
+The rate limiter and cache claim atomic Redis behaviour that cannot be exercised
+with a mock (Lua script race conditions, cross-instance bucket sharing, graceful
+degradation). Integration tests against a live Redis verify these guarantees.
+
+#### Verification
+```
+npm run test:integration  (no REDIS_URL set) →
+  Test Suites: 1 skipped
+  Tests:       6 skipped, 6 total  — skips cleanly with descriptive label
+
+npm test -- --testPathIgnorePatterns="tests/integration" →
+  122 passed, 5 suites
+
+Redis not available in this environment.
+Integration tests were not executed locally; CI run against redis:7 service
+container is required. See .github/workflows/ci.yml integration-tests job.
+```
+
+#### Limits
+- Integration tests not executed locally (no Redis in this dev environment).
+- Relies on CI redis:7 service container for real execution.
+- `RedisIdempotencyStore.hasAndMark()` duplicate-detection path (lines 150-191
+  of horizonEventHandler.ts) is not covered by integration tests in this task;
+  it requires a Redis-backed idempotency test which would fit in a separate
+  horizonEventHandler integration test file.
+
+---
+
 ### 2026-11-27 — fix/verify-and-readme (Task 3: Close real test gaps)
 
 #### Changes
