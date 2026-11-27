@@ -1,0 +1,18 @@
+[package]
+name = "kv-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Minimal key-value test fixture for the soroban-ts-sdk testnet harness"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "=22.0.11", features = [] }
+
+[dev-dependencies]
+soroban-sdk = { version = "=22.0.11", features = ["testutils"] }
+
+[features]
+default = []
