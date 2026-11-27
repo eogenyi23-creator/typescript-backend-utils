@@ -9,6 +9,82 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/redis-test-stability (Task 1: make Redis integration tests deterministic)
+
+#### Changes
+- **`tests/integration/redis.test.ts`** — complete rewrite of the six integration
+  tests.  Every test now creates its own Redis client in `beforeEach` and closes
+  it in `afterEach` via `await redis.quit()` (falls back to `redis.disconnect()`).
+  No connection state is shared between tests.
+  - "Fails open when Redis is unreachable" and "falls back to L1 when Redis is
+    down" now use a fresh `makeDeadRedis()` client pointing at port 19999
+    (`lazyConnect:true`, `enableOfflineQueue:false`, `maxRetriesPerRequest:0`)
+    instead of disconnecting and reconnecting the shared client.
+  - "Serves from L1 without hitting Redis on subsequent reads" no longer calls
+    `redis.disconnect()` / `redis.connect()` on the shared client.  It instead
+    seeds L1 on a new `ContractCache` that wraps a dead-Redis instance; because
+    `set()` always writes L1 regardless of Redis success, `get()` can be verified
+    to serve from L1 without any live Redis connection.
+  - `uniqueKey()` and `uniqueEndpoint()` generate per-test suffixes so tests
+    never interfere with each other or with leftover data.
+  - Every `deadRedis` client is closed in the test body with `closeRedis()`.
+- **`.github/workflows/ci.yml`** — the integration job now runs the tests twice
+  in a row (two separate steps, each with `--runInBand`) so a flaky pass is
+  visible in the CI log.  `--runInBand` is included because the tests share a
+  Redis server; in-band execution prevents concurrent workers from interleaving
+  bucket state across test suites.  `--forceExit` is intentionally absent: the
+  tests close their own connections and the process exits cleanly without it.
+
+#### Why
+**Root cause:** the test "serves from L1 without hitting Redis on subsequent
+reads" called `redis.disconnect()` on the shared `beforeAll` client, then
+tried to `redis.connect()` at the end of the test.  By that point ioredis had
+already begun reconnecting (its reconnect logic fires automatically after a
+disconnect), so the client's internal state was `"connecting"` or `"connected"`,
+not `"wait"`.  Calling `connect()` on a client that is not in `"wait"` state
+throws `"Redis is already connecting/connected"`.
+
+Additionally, the `deadRedis` clients in two tests were closed with
+`await deadRedis.quit().catch(() => {})` but the pending TCP connection attempt
+kept a `TickObject` / `StandaloneConnector` timer alive past the test run,
+causing "Jest did not exit one second after the test run has completed."
+
+The fix removes all disconnect/reconnect gymnastics from tests that do not need
+them and routes every "Redis is unavailable" scenario through a genuinely
+unreachable client, which eliminates both the state-collision error and the
+connection leak.
+
+#### Verification
+Reproduction on `main` before fix:
+```
+REDIS_URL=redis://localhost:6379 npm run test:integration
+  → 1 failed ("Redis is already connecting/connected"), 5 passed
+  → "Jest did not exit one second after the test run has completed."
+```
+
+After fix:
+```
+npm run lint                     → exit 0
+npm run build                    → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration"
+  → 180 passed, 0 failed
+npm run check:examples           → exit 0
+npm run check:readme-examples    → all 5 snippet(s) matched. ✓
+npm run check:claims             → 46 rows validated. ✓
+
+REDIS_URL=redis://localhost:6379 npx jest --testPathPattern=tests/integration
+  --detectOpenHandles
+  → 6 passed, 0 failed, NO open-handle warning, process exits cleanly
+
+Repeated-run stability (10 consecutive runs with --runInBand):
+  → 10/10 passed, 0 failed, 0 open-handle warnings
+```
+
+#### Limits
+The repeated-run test was done locally against Redis 7.0.15.  CI results after
+pushing will confirm the same behaviour against the redis:7 service container.
+No changes to `src/`; the library code is unchanged.
+
 ### 2026-11-27 — fix/harness-cli-flags (Task 1: audit and fix every stellar CLI call)
 
 #### Changes
