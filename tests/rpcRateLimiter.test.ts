@@ -2,7 +2,7 @@
  * Tests for the Stellar RPC / Horizon rate limiter middleware.
  */
 
-import { createRpcRateLimiter, RpcRequest, RpcResponse } from "../src/rpcRateLimiter.js";
+import { createRpcRateLimiter, RpcRateLimiter, RpcRequest, RpcResponse } from "../src/rpcRateLimiter.js";
 
 // ---------------------------------------------------------------------------
 // Mock Redis
@@ -163,6 +163,92 @@ describe("createRpcRateLimiter", () => {
       let next = false;
       await expect(mw(makeReq(), res, () => { next = true; })).resolves.not.toThrow();
       expect(next).toBe(true);
+    });
+  });
+
+  describe("trustProxy and IP resolution", () => {
+    it("uses X-Forwarded-For when trustProxy is true", async () => {
+      // Two requests from the same forwarded IP should share a bucket
+      const mw = createRpcRateLimiter("soroban-rpc", "public", redis as never, { maxTokens: 1 }, { trustProxy: true });
+      const req1: RpcRequest = { headers: { "x-forwarded-for": "203.0.113.1" } };
+      const req2: RpcRequest = { headers: { "x-forwarded-for": "203.0.113.1" } };
+      await mw(req1, new MockResponse(), () => {});
+      const res = new MockResponse();
+      let next = false;
+      await mw(req2, res, () => { next = true; });
+      expect(next).toBe(false);
+      expect(res.statusCode).toBe(429);
+    });
+
+    it("picks the leftmost IP from a comma-separated X-Forwarded-For list", async () => {
+      const mw = createRpcRateLimiter("soroban-rpc", "public", redis as never, { maxTokens: 1 }, { trustProxy: true });
+      const req1: RpcRequest = { headers: { "x-forwarded-for": "10.0.0.1, 10.0.0.2, 10.0.0.3" } };
+      const req2: RpcRequest = { headers: { "x-forwarded-for": "10.0.0.1" } };
+      await mw(req1, new MockResponse(), () => {});
+      const res = new MockResponse();
+      let next = false;
+      await mw(req2, res, () => { next = true; });
+      // Both requests resolve to 10.0.0.1 — second should be rate-limited
+      expect(next).toBe(false);
+      expect(res.statusCode).toBe(429);
+    });
+
+    it("accepts X-Forwarded-For as an array header", async () => {
+      const mw = createRpcRateLimiter("soroban-rpc", "public", redis as never, { maxTokens: 1 }, { trustProxy: true });
+      const req1: RpcRequest = { headers: { "x-forwarded-for": ["203.0.113.5", "10.0.0.1"] } };
+      await mw(req1, new MockResponse(), () => {});
+      const req2: RpcRequest = { headers: { "x-forwarded-for": ["203.0.113.5"] } };
+      const res = new MockResponse();
+      let next = false;
+      await mw(req2, res, () => { next = true; });
+      expect(next).toBe(false);
+      expect(res.statusCode).toBe(429);
+    });
+
+    it("falls back to socket.remoteAddress when no req.ip", async () => {
+      const mw = createRpcRateLimiter("soroban-rpc", "public", redis as never, { maxTokens: 1 });
+      const req: RpcRequest = { headers: {}, socket: { remoteAddress: "192.168.1.1" } };
+      await mw(req, new MockResponse(), () => {});
+      const req2: RpcRequest = { headers: {}, socket: { remoteAddress: "192.168.1.1" } };
+      const res = new MockResponse();
+      let next = false;
+      await mw(req2, res, () => { next = true; });
+      expect(next).toBe(false);
+      expect(res.statusCode).toBe(429);
+    });
+
+    it("uses 'unknown' when no IP can be resolved", async () => {
+      const mw = createRpcRateLimiter("soroban-rpc", "public", redis as never, { maxTokens: 1 });
+      const req: RpcRequest = { headers: {} }; // no ip, no socket
+      await mw(req, new MockResponse(), () => {});
+      const res = new MockResponse();
+      let next = false;
+      await mw(req, res, () => { next = true; });
+      expect(next).toBe(false);
+      expect(res.statusCode).toBe(429);
+    });
+  });
+
+  describe("RpcRateLimiter class (OO interface)", () => {
+    it("RpcRateLimiter.create() returns a limiter with a working middleware()", async () => {
+      const limiter = RpcRateLimiter.create("soroban-rpc", redis as never, "public");
+      const mw = limiter.middleware();
+      const res = new MockResponse();
+      let called = false;
+      await mw(makeReq("oo-test-ip"), res, () => { called = true; });
+      expect(called).toBe(true);
+    });
+
+    it("middleware() respects rate limits set via RpcRateLimiter.create()", async () => {
+      const limiter = RpcRateLimiter.create("soroban-rpc", redis as never, "public", { maxTokens: 2 });
+      const mw = limiter.middleware();
+      await mw(makeReq("oo-ip-2"), new MockResponse(), () => {});
+      await mw(makeReq("oo-ip-2"), new MockResponse(), () => {});
+      const res = new MockResponse();
+      let next = false;
+      await mw(makeReq("oo-ip-2"), res, () => { next = true; });
+      expect(next).toBe(false);
+      expect(res.statusCode).toBe(429);
     });
   });
 });

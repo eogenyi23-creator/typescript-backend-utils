@@ -8,6 +8,7 @@ import {
   verifyHorizonSignature,
   validateHorizonPayload,
   HorizonIdempotencyStore,
+  HorizonEventHandler,
   HorizonEventQueue,
   HorizonEventPayload,
   HorizonEventRequest,
@@ -245,6 +246,75 @@ describe("createHorizonEventHandler", () => {
       await handler(makeRequest(p1), new MockResponse());
       await handler(makeRequest(p2), new MockResponse());
       expect(queue.length).toBe(2);
+    });
+  });
+
+  describe("invalid request body", () => {
+    it("returns 400 for malformed JSON body", async () => {
+      const handler = createHorizonEventHandler({ secret: TEST_SECRET }, idempotency, queue);
+      const rawBody = Buffer.from("not valid json {{{");
+      const req: HorizonEventRequest = {
+        rawBody,
+        headers: { "x-stellar-signature": computeHorizonSignature(TEST_SECRET, rawBody) },
+      };
+      const res = new MockResponse();
+      const result = await handler(req, res);
+      expect(res.statusCode).toBe(400);
+      expect(result.reason).toBe("invalid_json");
+    });
+
+    it("returns 400 when payload data field is missing", async () => {
+      const handler = createHorizonEventHandler({ secret: TEST_SECRET }, idempotency, queue);
+      const badPayload = { id: "evt-1", timestamp: Math.floor(Date.now() / 1000), type: "payment" };
+      const rawBody = Buffer.from(JSON.stringify(badPayload));
+      const req: HorizonEventRequest = {
+        rawBody,
+        headers: { "x-stellar-signature": computeHorizonSignature(TEST_SECRET, rawBody) },
+      };
+      const res = new MockResponse();
+      const result = await handler(req, res);
+      expect(res.statusCode).toBe(400);
+      expect(result.reason).toBe("invalid_payload");
+    });
+
+    it("returns 400 when payload data field is an array", async () => {
+      const handler = createHorizonEventHandler({ secret: TEST_SECRET }, idempotency, queue);
+      const badPayload = { id: "evt-2", timestamp: Math.floor(Date.now() / 1000), type: "payment", data: [1, 2, 3] };
+      const rawBody = Buffer.from(JSON.stringify(badPayload));
+      const req: HorizonEventRequest = {
+        rawBody,
+        headers: { "x-stellar-signature": computeHorizonSignature(TEST_SECRET, rawBody) },
+      };
+      const res = new MockResponse();
+      const result = await handler(req, res);
+      expect(res.statusCode).toBe(400);
+      expect(result.reason).toBe("invalid_payload");
+    });
+  });
+
+  describe("HorizonEventQueue", () => {
+    it("peek() returns all enqueued events", async () => {
+      const q = new HorizonEventQueue();
+      const h = createHorizonEventHandler({ secret: TEST_SECRET }, new HorizonIdempotencyStore(), q);
+      const p1 = makePayload({ id: "q-evt-1" });
+      const p2 = makePayload({ id: "q-evt-2" });
+      await h(makeRequest(p1), new MockResponse());
+      await h(makeRequest(p2), new MockResponse());
+      const events = q.peek();
+      expect(events).toHaveLength(2);
+      expect(events[0].id).toBe("q-evt-1");
+    });
+  });
+
+  describe("HorizonEventHandler class (OO interface)", () => {
+    it("create() returns a handler with a working middleware()", async () => {
+      const h = HorizonEventHandler.create({ secret: TEST_SECRET });
+      const mw = h.middleware();
+      const payload = makePayload();
+      const res = new MockResponse();
+      const result = await mw(makeRequest(payload), res);
+      expect(res.statusCode).toBe(202);
+      expect(result.accepted).toBe(true);
     });
   });
 });

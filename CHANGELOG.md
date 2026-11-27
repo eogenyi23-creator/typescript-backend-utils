@@ -9,6 +9,56 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — fix/verify-and-readme (Task 3: Close real test gaps)
+
+#### Changes
+- Added 23 new tests across four modules (99 → 122 total).
+- `transactionBatcher.test.ts`: added `submitWithResults helper` and `error edge cases`
+  groups (5 new tests): typed bucket split, AbortSignal forwarding, non-Error rejection
+  wrapping, mid-sleep abort, pre-aborted signal before batch starts.
+- `rpcRateLimiter.test.ts`: added `trustProxy and IP resolution` and `RpcRateLimiter class`
+  groups (7 new tests): X-Forwarded-For string/array/comma-list parsing, socket.remoteAddress
+  fallback, 'unknown' fallback, `RpcRateLimiter.create()` + `middleware()` OO interface.
+- `horizonEventHandler.test.ts`: added `invalid request body`, `HorizonEventQueue`, and
+  `HorizonEventHandler class` groups (5 new tests): malformed JSON 400, missing `data` field
+  400, array `data` field 400, `queue.peek()`, `HorizonEventHandler.create()` + `middleware()`.
+- `wasmPipeline.test.ts`: added `WasmPipeline class` group (6 new tests): `process()`,
+  `validate()` on valid/invalid/too-small files, path traversal, missing file.
+
+#### Why
+Uncovered paths from baseline that matter for correctness or security:
+- `trustProxy` path: bypasses IP spoofing protection if the wrong code is used
+- `resolveIdentifier` socket fallback: would have silently used 'unknown' for all requests
+- `RpcRateLimiter` OO interface: 0% covered despite being the documented API
+- `HorizonEventHandler` OO interface: 0% covered despite being the documented API
+- Invalid JSON body path: could mask content-type bugs
+- `validateHorizonPayload` data-field checks: incorrect data would skip the validator
+- `WasmPipeline.validate()`: the safety guard before expensive contract uploads — entirely untested
+- `submitWithResults`: the main typed helper — not directly tested
+- Abort mid-backoff: could leave tasks stuck in retry loops after cancellation
+
+#### Verification
+```
+npm test → 122 passed, 5 suites (was 99)
+
+Coverage before → after:
+  All files:              76.5% → 87.55% stmts,  65.47% → 77.97% branch
+  contractCache.ts:       86.5% → 86.5%  stmts,  83.87% → 83.87% branch  (no new tests added)
+  horizonEventHandler.ts: 72.04% → 80.64% stmts, 67.39% → 76.08% branch
+  rpcRateLimiter.ts:      78.78% → 100%   stmts,  41.66% → 91.66% branch
+  transactionBatcher.ts:  66.66% → 86.66% stmts,  36.36% → 63.63% branch
+  wasmPipeline.ts:        74.03% → 92.3%  stmts,  53.84% → 73.07% branch
+```
+
+#### Limits
+- `RedisIdempotencyStore` (lines 150–191) and its `hasAndMark` duplicate-detection path
+  remain untested without a live Redis; those are covered in Task 4 integration tests.
+- `transactionBatcher.ts` lines 93-94 (`sleep()` pre-abort via pre-set signal) remain at
+  partial coverage — the test covers the batch-level abort, not the helper function branch
+  directly (the branch is covered indirectly through the existing abort tests).
+
+---
+
 ### 2026-11-27 — fix/verify-and-readme (Task 2: Make every README example compile against the real API)
 
 #### Changes
