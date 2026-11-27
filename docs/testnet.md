@@ -38,8 +38,9 @@ testnet on every run, then exercises each SDK module against that live contract.
 | C1 | `TransactionBatcher` | Valid increment tasks are fulfilled; fulfilled task hashes (when emitted by the CLI) are re-confirmed as SUCCESS via `getTransaction` |
 | C2 | `TransactionBatcher` | An invalid task (calling a non-existent function) fails independently without stopping the valid tasks |
 | C3 | `TransactionBatcher` | On-chain counters reflect the values written by the successful tasks |
-| D1 | `RpcRateLimiter` | Against a real Redis: 60 of 65 requests pass, 5 are blocked (public tier, limit=60) |
-| D2 | `RpcRateLimiter` | Bucket reset allows the next request (simulates window expiry) |
+| D1 | `RpcRateLimiter` | Against a real Redis: `maxTokens` of `maxTokens + 5` requests pass, 5 are blocked with HTTP status 429 (public tier); bucket EXISTS in Redis for the derived key `rl:<endpoint>:public:<ip>` — proves the limiter really used Redis |
+| D2 | `RpcRateLimiter` | Real refill: custom small config (maxTokens=5, refillRate=5/s); 5 allowed, 6th blocked (429), after 1.2 s a request is allowed again |
+| D3 | `RpcRateLimiter` | Two separately created limiter instances for the same endpoint share one Redis bucket: half the allowance through each, then the next request through either is blocked |
 | E1 | `HorizonEventHandler` | Valid HMAC-signed request accepted (202) |
 | E2 | `HorizonEventHandler` | Wrong signature rejected (401) |
 | E3 | `HorizonEventHandler` | Duplicate event ID not processed twice |
@@ -48,7 +49,24 @@ testnet on every run, then exercises each SDK module against that live contract.
 | E6 | `HorizonEventHandler` | Missing signature header rejected (401) |
 
 **Note on check D:** This tests the SDK's rate-limiter middleware against a real
-Redis instance. It does **not** test Stellar's own RPC rate limits.
+Redis instance. It does **not** test Stellar's own RPC rate limits. The check
+asserts that the bucket key exists in Redis (`EXISTS` returns 1), which proves
+the limiter really executed the Lua script — not the fail-open path. The
+fail-open guard wraps `console.error` for the duration of check D and fails
+every D sub-check if any log line containing `"failing open"` is emitted. A
+limiter that fails open can make a completely broken setup look healthy (every
+request is allowed either way), so the guard is essential. Full details:
+
+- **D1** — creates a limiter with the real `public` tier config, sends
+  `maxTokens + 5` sequential requests from a unique mock IP, asserts exactly
+  `maxTokens` allowed and 5 blocked (each with status 429 and a body), then
+  confirms the bucket exists in Redis via `EXISTS` and `SCAN`.
+- **D2** — real token refill: creates a limiter with a small custom config
+  (maxTokens=5, refillRate=5 tokens/s), sends 5 allowed and 1 blocked (429),
+  waits 1.2 s, then asserts the next request is allowed again.
+- **D3** — two separately created limiter instances for the same endpoint share
+  one Redis bucket: half the allowance through instance A, the other half
+  through instance B, then the next request through either is blocked.
 
 **Note on check E:** This runs entirely locally using a mock HTTP request/response
 pair. No testnet connection is made for check E.
@@ -226,7 +244,39 @@ WASM present: .../kv_test.wasm ✓
 | B1 FAIL (more than 1 fetch) | The cache's LRU or TTL logic is not storing entries correctly |
 | C1 FAIL | A valid transaction failed; check the error in the rejected record |
 | C2 FAIL (0 rejected) | An invalid function call unexpectedly succeeded — contract schema check not working |
-| D1 FAIL (wrong counts) | Redis Lua script atomicity issue; check that two separate connections are not sharing state |
+| D1 FAIL (wrong counts) | Limiter not behaving as expected; inspect the `console.error` output (fail-open) or check Redis Lua execution. The fail-open guard reports any `failing open` message as the root cause |
+| D1 FAIL (`limiter failed open: ...`) | The rate limiter hit an error and allowed every request through (fail-open). See the reported error — usually a Redis connection or argument mismatch. The harness cannot trust any D result in this state |
+
+---
+
+## Findings
+
+### First real run (2026-11-27, CLI 30.0.1)
+
+The first run against a real Redis instance found a harness mistake that caused
+D1 to fail and D2 to show a false PASS. The root cause was three bugs:
+
+1. **Wrong factory signature** — `createRpcRateLimiter` was called with an
+   object `{ redis, tier }` instead of positional arguments
+   `(endpoint, tier, redis)`. The endpoint resolved to `[object Object]` and
+   the `redis` argument was `undefined`, so every call threw before reaching
+   Redis and the limiter failed open.
+2. **Wrong bucket key** — the harness used `rrl:<endpoint>:public:<ip>` but the
+   library produces `rl:<endpoint>:<tier>:<identifier>`.
+3. **Mock response lacked `end()`** — `res.status(429).end(...)` threw inside
+   the middleware try/catch, which also triggered fail-open.
+
+The result was that every request hit the fail-open path (`console.error` logged
+the error and `next()` was called), so all 65 requests were counted as "allowed"
+and D2's bucket-reset test passed trivially because nothing was ever blocked.
+
+**A limiter that fails open makes a broken setup look healthy** — every request
+is allowed either way, so the harness cannot distinguish correct behaviour from a
+crash. The fix adds an explicit fail-open guard: `console.error` is wrapped
+around the whole check D block, and if any line containing `"failing open"` is
+emitted, the entire check is marked FAIL with the error message. It also adds an
+`EXISTS` assertion on the derived bucket key so the harness can prove the Lua
+script ran — not just that requests were not blocked.
 
 ---
 

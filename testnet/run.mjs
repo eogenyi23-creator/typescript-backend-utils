@@ -62,6 +62,10 @@ const {
   parseTransactionHash,
   getPreflightSpecs,
   checkPreflightFlags,
+  makeMockReqRes,
+  scanForFailOpen,
+  wrapConsoleError,
+  deriveBucketKey,
 } = await import(join(REPO_ROOT, "dist-testnet/helpers.js"));
 
 // ---------------------------------------------------------------------------
@@ -444,16 +448,18 @@ async function deployContract(deployerKeyName) {
   log("  Deploying contract instance…");
   const contractId = await stellarContractDeploy(wasmHash, deployerKeyName);
   log(`  Contract ID: ${contractId}`);
+  log(`  Explorer: https://stellar.expert/explorer/testnet/contract/${contractId}`);
 
   return { wasmHash, contractId };
 }
+
+const STELLAR_EXPERT_BASE = "https://stellar.expert/explorer/testnet/tx";
 
 // ---------------------------------------------------------------------------
 // Check A: WasmPipeline
 // ---------------------------------------------------------------------------
 
 async function checkA_wasmPipeline(wasmHash) {
-  logSection("Check A — WasmPipeline");
   const results = [];
 
   const { WasmPipeline, validateWasmPath } = await import(
@@ -680,10 +686,13 @@ async function checkC_transactionBatcher(contractId, extraKeys) {
       if (hash) {
         anyHashFound = true;
         const tx = await pollTransaction(hash, 30000);
+        const link = `${STELLAR_EXPERT_BASE}/${hash}`;
         if (tx.status === "SUCCESS") {
-          log(`    re-confirmed ${hash.slice(0, 12)}… → SUCCESS`);
+          log(`    re-confirmed ${hash} → SUCCESS`);
+          log(`    ${link}`);
         } else {
-          log(`    C1 FAIL  ${hash.slice(0, 12)}… re-check returned ${tx.status}`);
+          log(`    C1 FAIL  ${hash} re-check returned ${tx.status}`);
+          log(`    ${link}`);
           allConfirmed = false;
         }
       }
@@ -748,6 +757,27 @@ async function checkC_transactionBatcher(contractId, extraKeys) {
 // This does NOT test Stellar's own RPC rate limits.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Check D: RpcRateLimiter (requires REDIS_URL)
+//
+// Tests the SDK's rate-limiter middleware against a real Redis instance.
+// This does NOT test Stellar's own RPC rate limits.
+//
+// The limiter FAILS OPEN on any Redis error (it logs to console.error and
+// calls next()), so a broken setup lets every request through and would look
+// identical to a healthy one if the harness only counted allowed requests.
+// Therefore:
+//   - the factory is called with its real signature
+//     createRpcRateLimiter(endpoint, tier, redis, config?, options?)
+//   - the bucket key is derived exactly as the library does
+//     (`rl:${endpoint}:${tier}:${identifier}`) and verified with SCAN
+//   - the mock response records statusCode, so a 429 block is observable
+//   - the bucket's existence in Redis is asserted via EXISTS (proof the
+//     limiter really used Redis, not the fail-open path)
+//   - console.error is wrapped for the whole check; any "failing open"
+//     message fails every D sub-check
+// ---------------------------------------------------------------------------
+
 async function checkD_rpcRateLimiter() {
   logSection("Check D — RpcRateLimiter (real Redis, not Stellar RPC limits)");
 
@@ -756,10 +786,6 @@ async function checkD_rpcRateLimiter() {
     log("  D SKIPPED (REDIS_URL not set — set REDIS_URL to run this check)");
     return [{ id: "D", skipped: true, reason: "REDIS_URL not set" }];
   }
-
-  const { createRpcRateLimiter } = await import(
-    join(REPO_ROOT, "dist/rpcRateLimiter.js")
-  );
 
   let Redis;
   try {
@@ -779,66 +805,280 @@ async function checkD_rpcRateLimiter() {
   }
 
   const results = [];
-  const endpoint = `/harness/d/${Date.now()}`;
-  const ip = "10.0.0.1";
-  const bucketKey = `rrl:${endpoint}:public:${ip}`;
+  const subResults = [];
+  // Unique endpoint per run so leftover buckets from earlier runs cannot
+  // interfere, and so SCAN can find exactly this run's keys.
+  const endpoint = `harness-d-${Date.now()}-${randomBytes(4).toString("hex")}`;
+  // Unique mock IP per sub-check so buckets do not interfere with each other.
+  const uniqueIp = (n) => `10.${n}.${randomBytes(2).readUInt16BE(0)}.${randomBytes(1)[0]}`;
 
-  // Flush any stale bucket key so the test is deterministic
-  await redis.del(bucketKey);
+  // Fail-open guard: capture every console.error the limiter emits.
+  const recorder = wrapConsoleError();
+  const createdKeys = [];
 
-  const limiter = createRpcRateLimiter({ redis, tier: "public" });
+  try {
+    const { createRpcRateLimiter } = await import(
+      join(REPO_ROOT, "dist/rpcRateLimiter.js")
+    );
 
-  // Helper: build a minimal mock req/res pair for the middleware
-  function makeReqRes() {
-    const req = {
-      path: endpoint,
-      headers: {},
-      socket: { remoteAddress: ip },
-      ip,
-    };
-    let _status = 200;
-    let _nextCalled = false;
-    const res = {
-      setHeader() {},
-      status(c) { _status = c; return this; },
-      json() { return this; },
-    };
-    const next = () => { _nextCalled = true; };
-    return { req, res, next, isAllowed: () => _nextCalled };
+    // Runs one request through a limiter and returns the mock pair afterwards.
+    async function fire(limiter, ip) {
+      const mock = makeMockReqRes(ip);
+      await limiter(mock.req, mock.res, mock.next);
+      return mock;
+    }
+
+    // -------------------------------------------------------------------
+    // D1: real public-tier config; maxTokens + 5 requests; 5 blocked at 429.
+    // -------------------------------------------------------------------
+    {
+      const ip1 = uniqueIp(1);
+      const key1 = deriveBucketKey(endpoint, "public", ip1);
+      createdKeys.push(key1);
+
+      const limiter = createRpcRateLimiter(endpoint, "public", redis);
+
+      // First request: reads the REAL public-tier maxTokens from the
+      // X-RateLimit-Limit header the library sets (never hard-coded).
+      const first = await fire(limiter, ip1);
+      const maxTokens = Number(first.res.headers["X-RateLimit-Limit"]);
+      if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
+        subResults.push({
+          id: "D1",
+          pass: false,
+          detail: `could not read real maxTokens from X-RateLimit-Limit header (got ${first.res.headers["X-RateLimit-Limit"]})`,
+        });
+      } else {
+        const total = maxTokens + 5;
+        let allowed = first.isAllowed() ? 1 : 0;
+        let blocked = first.isAllowed() ? 0 : 1;
+        let blockedWith429 = first.res.statusCode === 429 ? 1 : 0;
+        for (let i = 1; i < total; i++) {
+          const mock = await fire(limiter, ip1);
+          if (mock.isAllowed()) allowed++;
+          else {
+            blocked++;
+            if (mock.res.statusCode === 429 && mock.res.endBody !== undefined) {
+              blockedWith429++;
+            }
+          }
+        }
+
+        // Prove the limiter really used Redis: the bucket must exist for the
+        // derived key, and SCAN on the unique endpoint prefix must find it.
+        const exists = await redis.exists(key1);
+        const scanResults = [];
+        let cursor = "0";
+        do {
+          const [next, keys] = await redis.scan(
+            cursor, "MATCH", `rl:${endpoint}:*`, "COUNT", 100
+          );
+          cursor = next;
+          scanResults.push(...keys);
+        } while (cursor !== "0");
+
+        const countsOk = allowed === maxTokens && blocked === 5;
+        const block429Ok = blocked === blockedWith429;
+        const existsOk = exists === 1;
+        const scanOk = scanResults.includes(key1);
+
+        if (countsOk && block429Ok && existsOk && scanOk) {
+          subResults.push({
+            id: "D1",
+            pass: true,
+            detail:
+              `allowed=${allowed} blocked=${blocked} (public tier, real maxTokens=${maxTokens}); ` +
+              `all ${blocked} blocks returned status 429 with a body; bucket EXISTS=1 for ` +
+              `${key1}; SCAN found the derived key`,
+          });
+        } else {
+          subResults.push({
+            id: "D1",
+            pass: false,
+            detail:
+              `allowed=${allowed} blocked=${blocked} (expected ${maxTokens} allowed, 5 blocked); ` +
+              `blocks with status 429 + body: ${blockedWith429}/5; ` +
+              `EXISTS(${key1})=${exists} (expected 1); ` +
+              `SCAN found derived key: ${scanOk} (scan saw: ${scanResults.join(", ") || "nothing"})`,
+          });
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // D2: real refill — custom small config, 5 allowed, 6th blocked,
+    // after ~1.2 s (refillRate 5/s) a request is allowed again.
+    // -------------------------------------------------------------------
+    {
+      const ip2 = uniqueIp(2);
+      const key2 = deriveBucketKey(endpoint, "public", ip2);
+      createdKeys.push(key2);
+
+      const limiter = createRpcRateLimiter(endpoint, "public", redis, {
+        maxTokens: 5,
+        windowSeconds: 60,
+        refillRate: 5.0,
+      });
+
+      let allowedCount = 0;
+      let blockedCount = 0;
+      let sixthBlocked429 = false;
+      for (let i = 0; i < 6; i++) {
+        const mock = await fire(limiter, ip2);
+        if (mock.isAllowed()) allowedCount++;
+        else {
+          blockedCount++;
+          if (mock.res.statusCode === 429) sixthBlocked429 = true;
+        }
+      }
+
+      // Refill: 5 tokens/s; waiting 1.2 s restores ~6 tokens.
+      await sleep(1200);
+      const afterRefill = await fire(limiter, ip2);
+
+      if (
+        allowedCount === 5 &&
+        blockedCount === 1 &&
+        sixthBlocked429 &&
+        afterRefill.isAllowed() &&
+        afterRefill.res.statusCode === 200
+      ) {
+        subResults.push({
+          id: "D2",
+          pass: true,
+          detail:
+            "real refill: 5 allowed, 6th blocked (429), request allowed again 1.2 s later " +
+            "(refillRate 5 tokens/s)",
+        });
+      } else {
+        subResults.push({
+          id: "D2",
+          pass: false,
+          detail:
+            `allowed=${allowedCount} blocked=${blockedCount} (expected 5/1); ` +
+            `6th returned 429: ${sixthBlocked429}; after 1.2 s allowed=` +
+            `${afterRefill.isAllowed()} status=${afterRefill.res.statusCode}`,
+        });
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // D3: two separately created limiter instances for the same endpoint
+    // share one Redis bucket (half the allowance through each, then the
+    // next request through either is blocked).
+    // -------------------------------------------------------------------
+    {
+      const ip3 = uniqueIp(3);
+      const key3 = deriveBucketKey(endpoint, "public", ip3);
+      createdKeys.push(key3);
+
+      // Real public-tier maxTokens (already proven readable in D1); re-read
+      // from the header on the first request to stay independent of D1.
+      const limiterA = createRpcRateLimiter(endpoint, "public", redis);
+      const limiterB = createRpcRateLimiter(endpoint, "public", redis);
+
+      const firstA = await fire(limiterA, ip3);
+      const maxTokens = Number(firstA.res.headers["X-RateLimit-Limit"]);
+      const half = Math.floor(maxTokens / 2);
+
+      let allowedA = firstA.isAllowed() ? 1 : 0;
+      for (let i = 1; i < half; i++) {
+        const mock = await fire(limiterA, ip3);
+        if (mock.isAllowed()) allowedA++;
+      }
+      let allowedB = 0;
+      for (let i = 0; i < half; i++) {
+        const mock = await fire(limiterB, ip3);
+        if (mock.isAllowed()) allowedB++;
+      }
+
+      // Total consumed = maxTokens (assuming no refill yet); next must block.
+      const nextThroughB = await fire(limiterB, ip3);
+      const exists3 = await redis.exists(key3);
+
+      if (
+        allowedA === half &&
+        allowedB === half &&
+        !nextThroughB.isAllowed() &&
+        nextThroughB.res.statusCode === 429 &&
+        exists3 === 1
+      ) {
+        subResults.push({
+          id: "D3",
+          pass: true,
+          detail:
+            `two instances share one bucket: ${allowedA} via instance A + ${allowedB} via ` +
+            `instance B (maxTokens=${maxTokens}); next request blocked (429); bucket EXISTS=1`,
+        });
+      } else {
+        subResults.push({
+          id: "D3",
+          pass: false,
+          detail:
+            `A allowed=${allowedA} (expected ${half}); B allowed=${allowedB} (expected ${half}); ` +
+            `next through B allowed=${nextThroughB.isAllowed()} status=${nextThroughB.res.statusCode}; ` +
+            `EXISTS(${key3})=${exists3}`,
+        });
+      }
+    }
+  } catch (err) {
+    // Any unexpected error in the check itself is a failure, not a skip.
+    subResults.push({
+      id: "D1",
+      pass: false,
+      detail: `check threw: ${err.message}`,
+    });
+  } finally {
+    recorder.restore();
+
+    // Remove every key this check created (plus any stray with the unique
+    // endpoint prefix), then close the Redis client.
+    try {
+      const strayKeys = [];
+      let cursor = "0";
+      do {
+        const [next, keys] = await redis.scan(
+          cursor, "MATCH", `rl:${endpoint}:*`, "COUNT", 100
+        );
+        cursor = next;
+        strayKeys.push(...keys);
+      } while (cursor !== "0");
+      const toDelete = [...new Set([...createdKeys, ...strayKeys])];
+      if (toDelete.length > 0) await redis.del(...toDelete);
+    } catch { /* best effort; keys carry a TTL anyway */ }
+    await redis.quit().catch(() => redis.disconnect());
   }
 
-  // Fire 65 requests sequentially against a 60-token bucket
-  let allowed = 0;
-  let blocked = 0;
-  for (let i = 0; i < 65; i++) {
-    const { req, res, next, isAllowed } = makeReqRes();
-    await limiter(req, res, next);
-    if (isAllowed()) allowed++;
-    else blocked++;
+  // ---------------------------------------------------------------------
+  // Fail-open guard: if ANY console.error containing "failing open" was
+  // recorded, no D sub-check may be reported as PASS.
+  // ---------------------------------------------------------------------
+  const scan = scanForFailOpen(recorder.messages);
+  if (scan.failedOpen) {
+    const firstError =
+      scan.firstMessage?.split("failing open:")[1]?.trim() ?? scan.firstMessage ?? "(no message)";
+    // Print the recorded message once, not once per request.
+    log(`  limiter failed open: ${firstError}`);
+    for (const r of subResults) {
+      log(`  ${r.id} FAIL  limiter failed open: ${firstError}`);
+      results.push({ id: r.id, pass: false });
+    }
+    if (subResults.length === 0) {
+      log(`  D1 FAIL  limiter failed open: ${firstError}`);
+      results.push({ id: "D1", pass: false });
+    }
+    return results;
   }
 
-  // D1: Exactly 60 allowed, 5 blocked
-  if (allowed === 60 && blocked === 5) {
-    log(`  D1 PASS  60 allowed, 5 blocked against real Redis (public tier, limit=60)`);
-    results.push({ id: "D1", pass: true });
-  } else {
-    log(`  D1 FAIL  allowed=${allowed} blocked=${blocked} (expected 60 allowed, 5 blocked)`);
-    results.push({ id: "D1", pass: false });
+  for (const r of subResults) {
+    if (r.pass) {
+      log(`  ${r.id} PASS  ${r.detail}`);
+      results.push({ id: r.id, pass: true });
+    } else {
+      log(`  ${r.id} FAIL  ${r.detail}`);
+      results.push({ id: r.id, pass: false });
+    }
   }
-
-  // D2: Bucket reset simulates window refill — first request after reset is allowed
-  await redis.del(bucketKey);
-  const { req: rr, res: rres, next: rnext, isAllowed: rAllowed } = makeReqRes();
-  await limiter(rr, rres, rnext);
-  if (rAllowed()) {
-    log(`  D2 PASS  request allowed after bucket reset (simulates window expiry)`);
-    results.push({ id: "D2", pass: true });
-  } else {
-    log(`  D2 FAIL  request blocked even after bucket reset`);
-    results.push({ id: "D2", pass: false });
-  }
-
-  redis.disconnect();
   return results;
 }
 
@@ -1081,6 +1321,25 @@ async function main() {
     return; // runPreflight exits; this is defensive
   }
 
+  // ── Only-D mode: skip Stellar network setup, run check D only ──────────
+  if (process.argv.includes("--only") && process.argv[process.argv.indexOf("--only") + 1] === "D") {
+    log("═".repeat(62));
+    log("  soroban-ts-sdk testnet harness — check D only");
+    log("═".repeat(62));
+    log(`  Run at: ${new Date().toISOString()}`);
+    const dResults = await checkD_rpcRateLimiter();
+    logSection("Summary");
+    const rows = buildSummaryTable(dResults);
+    log(formatSummaryTable(rows));
+    const dFail = dResults.filter((r) => !r.skipped && !r.pass);
+    const dPass = dResults.filter((r) => !r.skipped && r.pass);
+    const dSkip = dResults.filter((r) => r.skipped);
+    log(`  ${dPass.length} passed   ${dFail.length} failed   ${dSkip.length} skipped`);
+    writeFileSync(LAST_RUN_PATH, outputLines.join("\n") + "\n", "utf8");
+    if (dFail.length > 0) process.exitCode = 1;
+    return;
+  }
+
   log("═".repeat(62));
   log("  soroban-ts-sdk testnet harness");
   log("═".repeat(62));
@@ -1136,6 +1395,11 @@ async function main() {
     const passes = allResults.filter((r) => !r.skipped && r.pass);
     const skipped = allResults.filter((r) => r.skipped);
     log(`  ${passes.length} passed   ${failures.length} failed   ${skipped.length} skipped`);
+
+    // Deployed-evidence links (full, untruncated)
+    log(`  Deployed contract: ${contractId}`);
+    log(`  Contract explorer: https://stellar.expert/explorer/testnet/contract/${contractId}`);
+    log(`  WASM hash: ${wasmHash}`);
 
     // ── Write last-run.txt ───────────────────────────────────────────────
     writeFileSync(LAST_RUN_PATH, outputLines.join("\n") + "\n", "utf8");

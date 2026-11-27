@@ -24,6 +24,12 @@ import {
   parseTransactionHash,
   getPreflightSpecs,
   checkPreflightFlags,
+  makeMockReqRes,
+  scanForFailOpen,
+  wrapConsoleError,
+  deriveBucketKey,
+  resolveMaxTokens,
+  FAIL_OPEN_MARKER,
   type CheckResult,
   type SummaryRow,
 } from "../testnet/helpers.js";
@@ -476,5 +482,200 @@ describe("getPreflightSpecs", () => {
     const specs = getPreflightSpecs();
     const deploy = specs.find((s) => s.subcommand.join(" ") === "contract deploy");
     expect(deploy?.requiredFlags).toContain("--wasm-hash");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// makeMockReqRes
+// ---------------------------------------------------------------------------
+
+describe("makeMockReqRes", () => {
+  it("defaults statusCode to 200 and isAllowed to false before any call", () => {
+    const { res, isAllowed } = makeMockReqRes("10.0.0.1");
+    expect(res.statusCode).toBe(200);
+    expect(isAllowed()).toBe(false);
+  });
+
+  it("isAllowed returns true after next() is called", () => {
+    const { next, isAllowed } = makeMockReqRes("10.0.0.1");
+    expect(isAllowed()).toBe(false);
+    next();
+    expect(isAllowed()).toBe(true);
+  });
+
+  it("res.status() sets statusCode and returns res for fluent chaining", () => {
+    const { res } = makeMockReqRes("10.0.0.1");
+    const returned = res.status(429);
+    expect(res.statusCode).toBe(429);
+    expect(returned).toBe(res);
+  });
+
+  it("res.status().end() sets endBody", () => {
+    const { res } = makeMockReqRes("10.0.0.1");
+    res.status(429).end("too many");
+    expect(res.statusCode).toBe(429);
+    expect(res.endBody).toBe("too many");
+  });
+
+  it("res.end() without a body sets endBody to undefined", () => {
+    const { res } = makeMockReqRes("10.0.0.1");
+    res.end();
+    expect(res.endBody).toBeUndefined();
+  });
+
+  it("res.setHeader() records headers", () => {
+    const { res } = makeMockReqRes("10.0.0.1");
+    res.setHeader("X-RateLimit-Limit", 60);
+    res.setHeader("X-RateLimit-Remaining", 55);
+    expect(res.headers["X-RateLimit-Limit"]).toBe(60);
+    expect(res.headers["X-RateLimit-Remaining"]).toBe(55);
+  });
+
+  it("res.json() serialises body and stores it in endBody", () => {
+    const { res } = makeMockReqRes("10.0.0.2");
+    res.json({ error: "rate limited" });
+    expect(res.endBody).toBe(JSON.stringify({ error: "rate limited" }));
+  });
+
+  it("req carries the IP as both ip and socket.remoteAddress", () => {
+    const { req } = makeMockReqRes("192.168.1.1");
+    expect(req.ip).toBe("192.168.1.1");
+    expect(req.socket?.remoteAddress).toBe("192.168.1.1");
+  });
+
+  it("two separate makeMockReqRes calls do not share next-called state", () => {
+    const a = makeMockReqRes("10.0.0.1");
+    const b = makeMockReqRes("10.0.0.2");
+    a.next();
+    expect(a.isAllowed()).toBe(true);
+    expect(b.isAllowed()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanForFailOpen and FAIL_OPEN_MARKER
+// ---------------------------------------------------------------------------
+
+describe("scanForFailOpen", () => {
+  it("returns failedOpen=false for empty messages", () => {
+    const result = scanForFailOpen([]);
+    expect(result.failedOpen).toBe(false);
+    expect(result.firstMessage).toBeNull();
+  });
+
+  it("returns failedOpen=false when no message contains the marker", () => {
+    const result = scanForFailOpen(["Redis connected", "request processed"]);
+    expect(result.failedOpen).toBe(false);
+    expect(result.firstMessage).toBeNull();
+  });
+
+  it("returns failedOpen=true when a message contains the marker", () => {
+    const result = scanForFailOpen([`[RpcRateLimiter:endpoint] Redis error, ${FAIL_OPEN_MARKER}: TypeError`]);
+    expect(result.failedOpen).toBe(true);
+    expect(result.firstMessage).toContain(FAIL_OPEN_MARKER);
+  });
+
+  it("firstMessage is the first matching message, not a later one", () => {
+    const result = scanForFailOpen([
+      "unrelated",
+      `first ${FAIL_OPEN_MARKER}: err1`,
+      `second ${FAIL_OPEN_MARKER}: err2`,
+    ]);
+    expect(result.firstMessage).toContain("err1");
+    expect(result.firstMessage).not.toContain("err2");
+  });
+
+  it("includes all messages in the messages array", () => {
+    const msgs = ["a", "b", `c ${FAIL_OPEN_MARKER}`];
+    const result = scanForFailOpen(msgs);
+    expect(result.messages).toEqual(msgs);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapConsoleError
+// ---------------------------------------------------------------------------
+
+describe("wrapConsoleError", () => {
+  it("collects console.error calls and restores after restore()", () => {
+    const original = console.error;
+    const { messages, restore } = wrapConsoleError();
+    try {
+      console.error("test", "message");
+      console.error(42);
+    } finally {
+      restore();
+    }
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toContain("test");
+    expect(messages[1]).toBe("42");
+    // After restore, console.error is back to the original
+    expect(console.error).toBe(original);
+  });
+
+  it("does not forward captured calls to the original console.error", () => {
+    const calls: string[] = [];
+    const original = console.error;
+    // Replace console.error with a spy, then wrap it
+    console.error = (...args: unknown[]) => calls.push(args.join(" "));
+    const { messages, restore } = wrapConsoleError();
+    try {
+      console.error("captured");
+    } finally {
+      restore();
+    }
+    // The spy should not have received "captured" (wrapper intercepted it)
+    expect(calls).toHaveLength(0);
+    expect(messages).toEqual(["captured"]);
+    // Restore: console.error should be the spy we set, not some older version
+    console.error = original; // clean up spy
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deriveBucketKey
+// ---------------------------------------------------------------------------
+
+describe("deriveBucketKey", () => {
+  it("derives rl:<endpoint>:<tier>:<identifier>", () => {
+    expect(deriveBucketKey("soroban-rpc", "public", "10.0.0.1")).toBe(
+      "rl:soroban-rpc:public:10.0.0.1"
+    );
+  });
+
+  it("includes all three segments in the right order", () => {
+    const key = deriveBucketKey("horizon", "authenticated", "user-123");
+    expect(key.startsWith("rl:")).toBe(true);
+    expect(key).toContain(":horizon:");
+    expect(key).toContain(":authenticated:");
+    expect(key.endsWith(":user-123")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveMaxTokens
+// ---------------------------------------------------------------------------
+
+describe("resolveMaxTokens", () => {
+  const fakeConfigs = {
+    public: { maxTokens: 60 },
+    authenticated: { maxTokens: 300 },
+  };
+
+  it("returns the base tier maxTokens when no config override", () => {
+    expect(resolveMaxTokens(fakeConfigs, "public")).toBe(60);
+    expect(resolveMaxTokens(fakeConfigs, "authenticated")).toBe(300);
+  });
+
+  it("returns the override maxTokens when provided", () => {
+    expect(resolveMaxTokens(fakeConfigs, "public", { maxTokens: 5 })).toBe(5);
+  });
+
+  it("throws for an unknown tier with no override", () => {
+    expect(() => resolveMaxTokens(fakeConfigs, "unknown")).toThrow(/unknown tier/i);
+  });
+
+  it("does not throw for an unknown tier when an override provides maxTokens", () => {
+    expect(resolveMaxTokens(fakeConfigs, "unknown", { maxTokens: 10 })).toBe(10);
   });
 });
