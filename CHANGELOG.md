@@ -9,6 +9,36 @@ This project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-11-27 — docs/honest-docs-and-claims (Task 1: One changelog)
+
+#### Changes
+- Merged the factual history from `EMMY_CHANGELOG.md` into `CHANGELOG.md` under a
+  new section `## Development history (merged from a former second changelog)`.
+  Three dated entries (2026-09-19) preserved with their technical content; wording
+  about an external review program and resubmission audit removed.
+- Deleted `EMMY_CHANGELOG.md` with `git rm`.
+- No other files reference `EMMY_CHANGELOG.md` (confirmed by `grep -rn EMMY_CHANGELOG`).
+- Verified the `[0.1.0]` link at the bottom of `CHANGELOG.md` is well-formed
+  (`https://github.com/eogenyi23-creator/typescript-backend-utils/releases/tag/v0.1.0`).
+
+#### Why
+Two changelogs create conflicting records. The second file contained wording tied to
+an external process that is not part of the codebase's history.
+
+#### Verification
+```
+git rm EMMY_CHANGELOG.md  → rm 'EMMY_CHANGELOG.md'
+grep -rn EMMY_CHANGELOG . (excluding node_modules) → no results
+[0.1.0] link: https://github.com/eogenyi23-creator/typescript-backend-utils/releases/tag/v0.1.0
+  — well-formed URL, no trailing /** fragment
+```
+
+#### Limits
+The [0.1.0] link points to a release tag; the tag's existence on GitHub is not
+verified in this environment.
+
+---
+
 ### 2026-11-27 — fix/verify-and-readme (Task 4: Test against real Redis in CI)
 
 #### Changes
@@ -245,6 +275,58 @@ No failures at baseline. All 99 tests pass on Node v24.22.2.
 - Mock Redis, mock Soroban RPC responses, tmp-directory WASM fixtures
 - LRU eviction, ledger expiry mid-session, stampede prevention,
   Redis degradation, HMAC timing safety, path traversal, abort signal handling
+
+---
+
+## Development history (merged from a former second changelog)
+
+The entries below were originally recorded in a separate file. They are reproduced
+here with their original dates; wording about external review programs has been
+removed, and only the factual technical content is kept.
+
+---
+
+### 2026-09-19 — Scope audit
+
+**Finding:** All five modules address Stellar/Soroban-specific problems:
+
+- `contractCache`: handles Soroban's `liveUntilLedgerSeq` TTL model, persistent vs
+  temporary expiry, and `RestoreFootprintOperation` signalling.
+- `rpcRateLimiter`: per-endpoint, per-IP token-bucket limiting with Redis for Stellar
+  RPC and Horizon rate limits.
+- `transactionBatcher`: individual Soroban transaction submission with backoff for
+  `txInsufficientFee` errors.
+- `horizonEventHandler`: HMAC verification and replay protection for HMAC-signed HTTP
+  callbacks that deliver Horizon event data.
+- `wasmPipeline`: SHA-256 hash and magic-byte validation before `stellar contract install`.
+
+The repo name `typescript-backend-utils` is kept as-is to avoid breaking existing URLs;
+the npm package is named `soroban-ts-sdk` and documentation foregrounds the Soroban focus.
+
+---
+
+### 2026-09-19 — Branch: feat/changelog
+
+**What changed:** Added `CHANGELOG.md` following Keep a Changelog format; documents
+all features shipped in v0.1.0 for all five modules; creates `[Unreleased]` section.
+
+**Why:** The package was missing a changelog.
+
+---
+
+### 2026-09-19 — Branches: fix/ci-run-tests, feat/publish-workflow, feat/v0.1.0-tag
+
+**What changed:**
+- `fix/ci-run-tests`: added `cache: "npm"` to the CI `setup-node` step.
+- `feat/publish-workflow`: added `.github/workflows/publish.yml` — triggers on `v*.*.*`
+  tags, installs, builds, then publishes to npm using `NPM_TOKEN` secret.
+- `feat/v0.1.0-tag`: fixed broken `[0.1.0]` link in `CHANGELOG.md` (had a trailing
+  `/**` making it an invalid URL).
+
+**Why:** CI was missing npm caching. The publish workflow enables automated releases.
+The CHANGELOG link was malformed.
+
+---
 
 [Unreleased]: https://github.com/eogenyi23-creator/typescript-backend-utils/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/eogenyi23-creator/typescript-backend-utils/releases/tag/v0.1.0
