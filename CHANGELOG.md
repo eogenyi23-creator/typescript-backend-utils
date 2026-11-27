@@ -121,7 +121,39 @@ Live run: not yet run — awaiting owner execution.
 
 ---
 
-### 2026-11-27 — feat/testnet-harness (Task 4: docs, unit tests, claims-audit update)
+### 2026-11-27 — feat/testnet-harness (Task 3: contract ID safety check)
+
+#### Changes
+- **`testnet/run.mjs`**: The `assertNotForeignContract()` function now validates
+  that the deployed contract ID is well-formed rather than comparing against
+  hardcoded foreign IDs (which the spec prohibits storing in any committed file).
+  The function prints the contract ID prominently so the owner can compare it
+  manually against IDs from their other repos.
+- **`docs/testnet.md`**: Added a "Contract ID safety check (once-off manual
+  step)" section explaining what the owner must verify after the first run.
+
+#### Why
+The spec requires comparing against specific foreign IDs but also says "Do NOT
+write these IDs into any file of this repo." These requirements are in direct
+tension; the resolution is to make the check manual: the harness prints the
+deployed ID clearly, and the docs tell the owner to compare it manually.
+
+#### Verification
+```
+grep -c "CAEWW3" testnet/run.mjs → 0 (not found)
+npm run lint                     → exit 0
+npm run build                    → exit 0
+npm test -- --testPathIgnorePatterns="tests/integration" → 142 passed
+npm run check:claims             → 46 rows validated ✓
+```
+
+#### Limits
+The ID comparison is not automated; the owner must do it manually once after
+the first live run.
+
+---
+
+
 
 #### Changes
 - **`docs/testnet.md`**: New document. Describes each check, prerequisites
