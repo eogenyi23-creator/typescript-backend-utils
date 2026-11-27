@@ -96,7 +96,12 @@ jobs:
         run: npm run build
 
       - name: Run integration tests
-        run: npm run test:integration
+        run: npm run test:integration -- --runInBand
+        env:
+          REDIS_URL: redis://localhost:6379
+
+      - name: Run integration tests (second pass — catches flaky failures)
+        run: npm run test:integration -- --runInBand
         env:
           REDIS_URL: redis://localhost:6379
 
